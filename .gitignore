@@ -6,3 +6,6 @@ eval/runs/
 *.log
 __pycache__/
 .DS_Store
+.venv/
+
+eval/image_prep_samples/

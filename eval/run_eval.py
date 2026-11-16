@@ -4,7 +4,7 @@
 Usage: run_eval.py --n 8 --seed 1 --conditions skill,baseline --out eval/runs/<name>
 Candidate = `claude -p` (headless).  Judge = `codex exec`.  Reference text never reaches the candidate.
 """
-import argparse, csv, json, os, random, subprocess, pathlib, concurrent.futures as cf
+import argparse, csv, json, os, random, subprocess, pathlib, concurrent.futures as cf, statistics, math
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 SKILL = ROOT / "skill" / "brooks-price-action"
@@ -56,50 +56,97 @@ CANDIDATE:
 """
 
 def run(cmd, cwd=None, timeout=900):
-    p = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout)
+    p = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL)
+    if p.returncode:
+        raise RuntimeError(f"{cmd[0]} exited {p.returncode}: {p.stderr[-500:]}")
     return p.stdout.strip() or p.stderr.strip()
 
-def one(case, cond, out):
+DIMS = ["always_in", "market_state", "patterns", "levels", "bulls_bears", "watch", "hallucination_penalty"]
+
+
+def judge(case, cand, d, judges=1):
+    """Independent judge processes; population std measures within-case judge dispersion."""
+    ref = "\n".join("- " + t for t in case["reference"])
+    jp = JUDGE.format(date=case["date"][:10], title=case.get("title", ""), ref=ref, cand=cand)
+    scores = []
+    for i in range(judges):
+        path = d / ("judge.txt" if judges == 1 else f"judge_{i + 1}.txt")
+        txt = ""
+        try:
+            path.unlink(missing_ok=True)
+            raw = run([CODEX, "exec", "--skip-git-repo-check", "-o", str(path), jp], cwd=d)
+            txt = path.read_text() if path.exists() else raw
+            score = json.loads(txt[txt.index("{"): txt.rindex("}") + 1])
+            for dim in DIMS:
+                v = score[dim]
+                if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or not 0 <= v <= 10:
+                    raise ValueError(f"invalid {dim}")
+            scores.append(score)
+        except (ValueError, KeyError, TypeError, RuntimeError, OSError, subprocess.TimeoutExpired) as e:
+            scores.append({"error": str(e), "raw": txt[-500:]})
+    result = {"judges": judges, "judge_scores": scores}
+    valid = [s for s in scores if "error" not in s]
+    result["valid_judges"] = len(valid)
+    if len(valid) != judges:
+        result["error"] = "One or more judges failed; incomplete scores excluded from summaries"
+    if valid:
+        means = {dim: statistics.mean(s[dim] for s in valid) for dim in DIMS}
+        result.update(means)  # preserve existing top-level scoring interface
+        result["mean"] = means
+        result["std"] = {dim: statistics.pstdev(s[dim] for s in valid) for dim in DIMS}
+        result["summary"] = valid[0].get("summary", "")
+    return result
+
+
+def cached_score(d, judges):
+    path = d / "score.json"
+    if path.exists():
+        score = json.loads(path.read_text())
+        if score.get("judges", 1) == judges and "error" not in score:
+            return score
+
+
+def one(case, cond, out, judges=1):
     d = out / f"{case['id']}_{cond}"; d.mkdir(parents=True, exist_ok=True)
-    if (d / "score.json").exists(): return json.load(open(d / "score.json"))
+    cached = cached_score(d, judges)
+    if cached is not None: return cached
     csvp = d / "bars.csv"; last = cut_ohlc(case["date"], csvp)
     prompt = {"skill": PROMPT_SKILL, "skillrag": PROMPT_RAG, "baseline": PROMPT_BASE}[cond].format(skill=SKILL, csv=csvp, last=last)
-    cand = run(["claude", "-p", prompt, "--allowedTools", "Bash(python3:*) Read", "--add-dir", str(SKILL), str(d)], cwd=d)
-    (d / "candidate.md").write_text(cand)
-    ref = "\n".join("- " + t for t in case["reference"])
-    jp = JUDGE.format(date=case["date"][:10], title=case["title"], ref=ref, cand=cand)
-    raw = run([CODEX, "exec", "--skip-git-repo-check", "-o", str(d / "judge.txt"), jp], cwd=d)
-    txt = (d / "judge.txt").read_text() if (d / "judge.txt").exists() else raw
-    try:
-        s = json.loads(txt[txt.index("{"): txt.rindex("}") + 1])
-    except Exception:
-        s = {"error": txt[-500:]}
+    candidate_path = d / "candidate.md"
+    cand = candidate_path.read_text() if candidate_path.exists() else run(["claude", "-p", prompt, "--allowedTools", "Bash(python3:*) Read", "--add-dir", str(SKILL), str(d)], cwd=d)
+    candidate_path.write_text(cand)
+    s = judge(case, cand, d, judges)
     s.update({"id": case["id"], "date": case["date"][:10], "cond": cond})
-    json.dump(s, open(d / "score.json", "w"), indent=1)
+    (d / "score.json").write_text(json.dumps(s, indent=1))
     return s
+
+
+def summarize(res, conditions, out):
+    for k in conditions:
+        rs = [r for r in res if r["cond"] == k and "error" not in r]
+        if not rs: continue
+        avg = {d: round(sum(r[d] for r in rs) / len(rs), 2) for d in DIMS}
+        avg["total"] = round(sum(avg[d] for d in DIMS[:-1]) - avg["hallucination_penalty"], 2)
+        print(k, len(rs), avg)
+        (out / f"summary_{k}.json").write_text(json.dumps(avg, indent=1))
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--n", type=int, default=8); ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--conditions", default="skill,baseline"); ap.add_argument("--out", default="eval/runs/dev")
     ap.add_argument("--since", default="2016-01-01"); ap.add_argument("--split", default="dev"); ap.add_argument("--workers", type=int, default=3)
+    ap.add_argument("--judges", type=int, default=1)
     a = ap.parse_args()
+    if a.judges < 1: ap.error("--judges must be positive")
     cases = [c for c in map(json.loads, open(CASES)) if c["date"] >= a.since and c.get("split") == a.split]
     random.Random(a.seed).shuffle(cases); cases = cases[: a.n]
     out = ROOT / a.out; out.mkdir(parents=True, exist_ok=True)
     jobs = [(c, k) for c in cases for k in a.conditions.split(",")]
     res = []
     with cf.ThreadPoolExecutor(a.workers) as ex:
-        for s in ex.map(lambda j: one(*j, out), jobs):
+        for s in ex.map(lambda j: one(*j, out, a.judges), jobs):
             print(json.dumps(s)[:300], flush=True); res.append(s)
-    dims = ["always_in", "market_state", "patterns", "levels", "bulls_bears", "watch", "hallucination_penalty"]
-    for k in a.conditions.split(","):
-        rs = [r for r in res if r["cond"] == k and "error" not in r]
-        if not rs: continue
-        avg = {d: round(sum(r.get(d, 0) for r in rs) / len(rs), 2) for d in dims}
-        avg["total"] = round(sum(avg[d] for d in dims[:-1]) - avg["hallucination_penalty"], 2)
-        print(k, len(rs), avg)
-        json.dump(avg, open(out / f"summary_{k}.json", "w"), indent=1)
+    summarize(res, a.conditions.split(","), out)
 
 if __name__ == "__main__":
     main()
