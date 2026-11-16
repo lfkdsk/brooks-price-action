@@ -1,0 +1,8 @@
+# Copyrighted source material and derived text stay local (personal study only)
+data/
+skill/brooks-price-action/data/
+eval/es_daily_cases.jsonl
+eval/runs/
+*.log
+__pycache__/
+.DS_Store
