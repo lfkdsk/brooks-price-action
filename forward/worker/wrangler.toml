@@ -2,6 +2,12 @@ name = "brooks-forward"
 main = "src/index.js"
 compatibility_date = "2025-01-01"
 
+# Custom domain (zone lfkdsk.org is on the same Cloudflare account; wrangler creates the DNS record).
+# Must stay above the [[d1_databases]] table, otherwise TOML attaches it to that table.
+routes = [
+  { pattern = "brooks.lfkdsk.org", custom_domain = true }
+]
+
 [[d1_databases]]
 binding = "DB"
 database_name = "brooks_forward"
