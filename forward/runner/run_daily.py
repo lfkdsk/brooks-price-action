@@ -130,7 +130,8 @@ class API:
 
     def request(self, method, path, body=None):
         data = None if body is None else json.dumps(body, allow_nan=False).encode()
-        headers = {'Content-Type': 'application/json'}
+        # Cloudflare's bot check rejects the default Python-urllib agent (error 1010).
+        headers = {'Content-Type': 'application/json', 'User-Agent': 'brooks-forward-runner/1.0'}
         if method == 'POST':
             headers['Authorization'] = 'Bearer ' + self.token
         # Retrying POST is safe for bars/predictions; runs are append-only, so one attempt.
@@ -139,9 +140,10 @@ class API:
                 req = urllib.request.Request(self.base + path, data=data, headers=headers, method=method)
                 with urllib.request.urlopen(req, timeout=90) as response:
                     return json.load(response)
-            except OSError:
+            except OSError as e:
+                status = getattr(e, 'code', None)
                 if attempt == (0 if path == '/api/runs' else 2):
-                    raise RuntimeError('Collector request failed: ' + method + ' ' + path.split('?')[0]) from None
+                    raise RuntimeError(f'Collector request failed: {method} {path.split("?")[0]} (HTTP {status})') from None
                 time.sleep(2 ** attempt)
 
 
@@ -169,9 +171,9 @@ def collect(config, api, skill_sha, skill, workers=2, fetcher=fetch_bars, llm=ll
                     logs.append(f'{symbol} {asof} {condition}: exists, skipped')
                 else:
                     jobs.append((symbol, asof, condition, bars))
-        except Exception:
+        except Exception as e:
             failures += 1
-            logs.append(f'{symbol}: fetch/API failure')
+            logs.append(f'{symbol}: fetch/API failure ({type(e).__name__}: {str(e)[:120]})')
 
     def job(args):
         symbol, asof, condition, bars = args
