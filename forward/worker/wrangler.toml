@@ -5,5 +5,5 @@ compatibility_date = "2025-01-01"
 [[d1_databases]]
 binding = "DB"
 database_name = "brooks_forward"
-database_id = "REPLACE_WITH_D1_DATABASE_ID"
+database_id = "f107c171-8cb0-49e9-bac7-028705d2f232"
 # Set WRITE_TOKEN using wrangler secret put; never put it in this file.
