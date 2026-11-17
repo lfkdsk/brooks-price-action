@@ -51,3 +51,39 @@ Reading:
 - Reading the analyst's own chart image gives better **levels** (7.3–7.9 vs 6.0–6.7) — the image's window and
   scale match what the analyst looked at, which addresses the swing-anchor gap — but more hallucinated detail.
 - Annotations (red swing-date labels) help a little, consistent with anchor choice being the main gap.
+
+---
+
+# Round 3 (2026-11-16): 40-case test split + forward backtest
+
+## Agreement with analysts, test split (n=40, seed 3, 1 judge)
+| Condition | Total |
+|---|---|
+| OHLC baseline | 37.5 |
+| OHLC skill v4 | 37.4 |
+
+Paired skill − baseline = **−0.2 ± 0.6** (16 wins / 20 losses / 4 ties). On held-out cases the skill does not change
+agreement with the analysts. (The dev-set +1.2 did not replicate.)
+
+## Forward backtest (does the reading predict the next 5 bars?)
+60 weekly as-of points 2016–2026 (stratified by year, seed 7), **anonymized** (no dates/instrument, last close =
+1000). The candidate ends with a JSON forecast; scored on the following real bars. Responses audited: none mention
+real years, instrument names or data files. Only 1 sample is after 2026-07-01, so the post-cutoff subset is unusable.
+
+| | 5-bar direction hit (coverage) | Brier (p_up_5) | Strategy Sharpe* | Target before stop |
+|---|---|---|---|---|
+| Claude + skill | 63.5% (87%) | 0.241 | 0.34 | 37% |
+| Claude, no skill | 63.2% (95%) | 0.237 | 0.52 | 44% |
+| buy & hold | ~58% | — | ~−0.2 | — |
+| EMA20 side | ~57% | — | ~−0.4 | — |
+| coin flip | ~50% | — | — | — |
+| constant historical base rate | — | ~0.235 | — | — |
+
+*Hold the Always In direction for 5 bars on 60 non-overlapping weeks, 1 tick cost; Sharpe from 60 points is very noisy.
+
+Reading:
+- Both LLM conditions call 5-bar direction ~5–6 points better than buy & hold / EMA20 and ~13 points better than a
+  coin, but **every bootstrap 95% CI on those deltas includes 0** at n=60.
+- **Probabilities are not informative**: Brier ≈ the constant base-rate forecast.
+- The skill does not beat plain Claude on any forward metric (slightly fewer target-first outcomes).
+- Earlier JSON-parse failures came from free-form `state` labels; the parser now normalizes `state` (unscored).
