@@ -67,3 +67,11 @@ On 12 dev cases the skill does **not** yet beat the base model (≈40/60 for all
 ## License
 
 Code: MIT. Notes in `skill/…/references/` are original summaries; quoted fragments remain © their authors.
+
+## Forward test
+
+[forward/](forward/README.md) provides a prospective daily **paper-trading test (模拟仓)**:
+Claude with/without the skill versus mechanical baselines, a Cloudflare Worker/D1 dashboard,
+and a Python collector with Linux scheduling instructions. Predictions are recorded before
+future outcomes exist. Setup is operator-run; no orders are placed and nothing is deployed
+by default. Paper trading only, not financial advice.

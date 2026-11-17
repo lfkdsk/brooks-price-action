@@ -1,0 +1,10 @@
+[Unit]
+Description=Run Brooks paper trading weekdays at 13:40 Pacific
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 13:40:00 America/Los_Angeles
+Persistent=true
+Unit=brooks-forward.service
+
+[Install]
+WantedBy=timers.target

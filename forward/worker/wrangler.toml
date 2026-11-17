@@ -1,0 +1,9 @@
+name = "brooks-forward"
+main = "src/index.js"
+compatibility_date = "2025-01-01"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "brooks_forward"
+database_id = "REPLACE_WITH_D1_DATABASE_ID"
+# Set WRITE_TOKEN using wrangler secret put; never put it in this file.

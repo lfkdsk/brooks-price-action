@@ -1,0 +1,9 @@
+{
+  "symbols": ["SPY", "QQQ", "IWM", "DIA", "TLT", "GLD"],
+  "conditions": ["skill", "baseline", "ema20", "momentum20", "buy_hold"],
+  "llm_cli": "claude",
+  "api_base": "https://REPLACE_WITH_WORKER_URL",
+  "lookback": 700,
+  "timezone": "America/Los_Angeles",
+  "skill_dir": "../../skill/brooks-price-action"
+}
