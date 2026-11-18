@@ -1,0 +1,13 @@
+[Unit]
+Description=Run Brooks intraday decisions every 15 minutes on weekdays
+
+[Timer]
+# Start 25 seconds after the close to clear the 20-second bar buffer.
+OnCalendar=Mon..Fri *-*-* 06:45:25 America/Los_Angeles
+OnCalendar=Mon..Fri *-*-* 07..12:00,15,30,45:25 America/Los_Angeles
+AccuracySec=1s
+Persistent=false
+Unit=brooks-intraday.service
+
+[Install]
+WantedBy=timers.target

@@ -9,7 +9,7 @@ const make=()=>({DB:new FakeD1(),WRITE_TOKEN:'test-secret'});
 const call=(env,path,method='GET',body,auth='Bearer test-secret')=>worker.fetch(new Request('https://unit.test'+path,{method,headers:{authorization:auth},...(body===undefined?{}:{body:JSON.stringify(body)})}),env);
 const p={symbol:'SPY',asof:'2026-11-01',condition:'skill',model:'test',skill_sha:'abc',always_in:'long',p_up_5:.6,target:null,stop:null,horizon:5,state:'bull_trend',close:100,reading:'<script>alert(1)</script>'};
 test('auth rejects absent/wrong tokens; all writes protected',async()=>{
- const env=make();for(const path of ['/api/bars','/api/predictions','/api/runs'])for(const token of ['', 'Bearer wrong'])assert.equal((await call(env,path,'POST',{},token)).status,401);
+ const env=make();for(const path of ['/api/bars','/api/predictions','/api/runs','/api/intraday/bars','/api/intraday/predictions','/api/recaps'])for(const token of ['', 'Bearer wrong'])assert.equal((await call(env,path,'POST',{},token)).status,401);
  assert.equal(await authorized('Bearer test-secret','test-secret'),true);assert.equal(await authorized('Bearer test-secret',''),false);assert.equal(env.DB.calls.length,0);
 });
 test('upsert bars and predictions, filter, limit, reading escaping',async()=>{

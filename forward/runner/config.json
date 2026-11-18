@@ -1,6 +1,8 @@
 {
   "symbols": ["SPY", "QQQ", "IWM", "DIA", "TLT", "GLD"],
   "conditions": ["skill", "baseline", "ema20", "momentum20", "buy_hold"],
+  "intraday_symbols": ["SPY"],
+  "intraday_model": "sonnet",
   "llm_cli": "claude",
   "api_base": "https://brooks.lfkdsk.org",
   "lookback": 700,

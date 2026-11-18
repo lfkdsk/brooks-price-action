@@ -168,3 +168,63 @@ add LLM prompt/dispatch explicitly for a new LLM condition. Worker condition nam
 open text and appear automatically in statistics/dashboard. A new condition starts when
 first collected, so use paired metrics for unequal coverage. Freeze and document any
 changes; changing a rule under the same condition name mixes regimes.
+
+## Five-minute paper trading and daily recap
+
+Open `/intraday?symbol=SPY` for equity, metrics, decisions and readings. Open
+`/recap?symbol=SPY` for the latest Chinese review and chart, or
+`/recap/YYYY-MM-DD?symbol=SPY` for a specific session. The symbols default to SPY
+in `runner/config.json` (`intraday_symbols`). Change `intraday_model` to override
+Sonnet for the two prediction conditions. Recaps use the Claude CLI default model.
+A normal session has 25 decision points and up to 50 forecast calls per symbol,
+plus one recap and up to one retry per invalid model response.
+
+Yahoo 5-minute OHLC is filtered to regular-session starts in 09:30–15:55 ET.
+The runner uses New York zoneinfo, excludes the closing auction and waits 20
+seconds after a bar closes. Bar numbers are clock slots, so vendor gaps do not
+renumber later bars. Forecasts use today's tape through the decision and up to
+two previous sessions as context. A timer runs after bars 3, 6, …, 75. Each run
+can generate forecasts only for the latest eligible point, skips stored
+conditions, and records older uncollected points from the current session as
+missed. Recap requires a contiguous completed session and uses the prior daily
+close, high and low from Yahoo. Holidays with no session bars are skipped.
+
+- Skill and plain Claude run in parallel. The skill receives computed features.
+  EMA20 uses the two prior sessions and today's closes through the decision.
+  Opening bar follows its body direction, with bodies at or below 25% of the
+  range treated as dojis. Buy and hold stays long after its first eligible entry.
+  Mechanical forecasts use probability .5 and have no target/stop.
+- Positions change at the exact next bar's open and flatten at the last session
+  bar's close. A missed signal leaves an existing position in place until the next
+  available decision entry or the close. Each symbol/day starts flat. Next-open
+  prices are hypothetical since the collection buffer and model latency occur
+  after that open. Target and stop evaluation is separate from the account.
+- Daily P&L uses fixed session-open notional, including the configured
+  `INTRADAY_COST_BPS` (default 1) per unit of position change. Daily returns are
+  equal-weighted across symbols with decisions and compounded from equity 1.
+  Sharpe uses completed days and sample standard deviation scaled by sqrt(252).
+  Exposure is the fraction of observed session slots spent long or short.
+  In-progress equity is marked at the latest stored close. The final bar of an
+  early-close session depends on Yahoo's regular trading period metadata.
+- Direction and probability use the exact same-session close six slots later.
+  A tie counts as no up move. Unclear is excluded from direction hits and
+  included in Brier and log loss. Target/stop use same-session high/low with
+  stop winning a double touch. Pending outcomes and unavailable outcomes
+  (session ends or bar gaps) are counted separately. Paired metrics use matched
+  symbol, session and decision points.
+
+| Route | Body / result |
+|---|---|
+| POST /api/intraday/bars | `{bars:[{symbol,ts,session,bar,open,high,low,close,volume,final?}]}` |
+| POST /api/intraday/predictions | One forecast with `symbol,session,bar,ts,condition,model,skill_sha,always_in,p_up_6,target,stop,horizon,day_type,close,reading` |
+| GET /api/intraday/predictions?symbol=&session=&condition=&limit= | `{predictions:[…]}`, newest first |
+| GET /api/intraday/stats?symbol= | Account, forecast and paired metrics |
+| POST /api/recaps | `{symbol,session,day_type,markdown,annotations,levels,model,skill_sha,prior?,force?}` |
+| GET /api/recaps?symbol=&session= | `{recaps:[…]}`, latest first, symbol defaults to SPY |
+
+Timestamps are UTC bar starts. All writes use the existing Bearer token.
+Intraday predictions are insert-only at their decision key. Recaps are
+insert-only at their session key unless explicitly forced. Follow the
+[Precision setup](deploy/precision-setup.md#add-intraday-to-an-existing-production-installation)
+for the additive D1 migration and independent timers. Stats read intraday history
+for the requested symbol (or all symbols when omitted).

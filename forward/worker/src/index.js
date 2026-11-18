@@ -1,3 +1,4 @@
+import {intradayRoutes,intradayWrites} from './intraday-api.js';
 import {computeMetrics} from './metrics.js';
 import {dashboard,readingPage} from './dashboard.js';
 const json=(data,status=200)=>new Response(JSON.stringify(data),{status,headers:{'content-type':'application/json; charset=utf-8','cache-control':'no-store'}});
@@ -12,15 +13,17 @@ const number=x=>typeof x==='number'&&Number.isFinite(x);
 const symbol=s=>typeof s==='string'&&/^[A-Za-z0-9^=._-]{1,24}$/.test(s);
 const text=(s,n=200)=>typeof s==='string'&&s.length<=n;
 async function all(db,sql,args=[]){return (await db.prepare(sql).bind(...args).all()).results;}
+const intraday=intradayRoutes({json,date,number,symbol,text,all});
 export default {async fetch(request,env){
  const u=new URL(request.url),path=u.pathname,db=env.DB;
  try{
  if(request.method==='POST'){
-  if(!['/api/bars','/api/predictions','/api/runs'].includes(path))return json({error:'Not found'},404);
+  if(!['/api/bars','/api/predictions','/api/runs',...intradayWrites].includes(path))return json({error:'Not found'},404);
   if(!await authorized(request.headers.get('authorization'),env.WRITE_TOKEN))return json({error:'Unauthorized'},401);
   if(Number(request.headers.get('content-length'))>2000000)return json({error:'Body too large'},413);
   const raw=await request.text();if(raw.length>2000000)return json({error:'Body too large'},413);
   let body;try{body=JSON.parse(raw)}catch{return json({error:'Invalid JSON'},400)}
+  if(intradayWrites.includes(path))return await intraday.write(path,body,db);
   if(path==='/api/bars'){
    const rows=body.bars;if(!Array.isArray(rows)||!rows.length||rows.length>2000||rows.some(b=>!symbol(b.symbol)||!date(b.date)||!['open','high','low','close'].every(k=>number(b[k])&&b[k]>0)||b.high<Math.max(b.open,b.close,b.low)||b.low>Math.min(b.open,b.close)))return json({error:'Invalid bars'},400);
    for(const b of rows)await db.prepare('INSERT INTO bars(symbol,date,open,high,low,close) VALUES(?,?,?,?,?,?) ON CONFLICT(symbol,date) DO UPDATE SET open=excluded.open,high=excluded.high,low=excluded.low,close=excluded.close').bind(b.symbol,b.date,b.open,b.high,b.low,b.close).run();
@@ -35,6 +38,7 @@ export default {async fetch(request,env){
   await db.prepare('INSERT INTO runs(started_at,finished_at,host,ok,log) VALUES(?,?,?,?,?)').bind(r.started_at,r.finished_at,r.host,+r.ok,r.log).run();return json({ok:true});
  }
  if(request.method!=='GET')return json({error:'Method not allowed'},405);
+ const extra=await intraday.read(u,env);if(extra)return extra;
  if(path==='/')return new Response(dashboard,{headers:{'content-type':'text/html; charset=utf-8'}});
  if(path==='/api/predictions'){
   const clauses=[],args=[];for(const k of ['symbol','condition'])if(u.searchParams.has(k)){clauses.push(`${k}=?`);args.push(u.searchParams.get(k));}

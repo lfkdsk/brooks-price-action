@@ -1,0 +1,10 @@
+[Unit]
+Description=Run Brooks intraday recap weekdays at 13:20 Pacific
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 13:20:00 America/Los_Angeles
+Persistent=false
+Unit=brooks-recap.service
+
+[Install]
+WantedBy=timers.target

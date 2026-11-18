@@ -1,9 +1,13 @@
-# Precision7960 setup (operator instructions; no live deployment has been performed)
+# Precision7960 setup
 
 Use a normal Linux user with Python 3.9+ (including system tzdata), Node 20+,
 Git, util-linux `flock`, an authenticated Claude CLI, and npx/wrangler available.
 Codex is not used by this runner. Run all commands below yourself on Precision7960.
 Paths assume a clone at `~/brooks-price-action`; change the service and BROOKS_REPO if needed.
+
+For the existing production Worker and daily timer, go directly to
+[Add intraday](#add-intraday-to-an-existing-production-installation).
+The steps below provision a fresh daily installation.
 
 1. Clone and enter the repository:
 
@@ -104,3 +108,36 @@ The Worker has no cron trigger. Monitor the dashboard/logs, Cloudflare quotas an
 and back up D1 with an operator-run export periodically. Reads, full readings, model names,
 revision IDs and symbols are public; do not include private data in prompts/readings.
 No brokerage credentials or order execution are involved.
+
+## Add intraday to an existing production installation
+
+Keep the existing daily timer and token. Apply the additive migration from
+`forward/worker` before releasing the updated Worker:
+
+```sh
+cd ~/brooks-price-action/forward/worker
+npx wrangler d1 execute brooks_forward --remote --file migrations/0002_intraday.sql
+```
+
+Once the upgraded Worker is live, check `/api/intraday/stats?symbol=SPY` and
+`/api/recaps?symbol=SPY` and install the two new user timers:
+
+```sh
+cd ~/brooks-price-action
+mkdir -p ~/.config/systemd/user ~/.local/state/brooks-forward
+cp forward/deploy/brooks-{intraday,recap}.{service,timer} ~/.config/systemd/user/
+systemd-analyze calendar 'Mon..Fri *-*-* 06:45:25 America/Los_Angeles'
+systemd-analyze calendar 'Mon..Fri *-*-* 07..12:00,15,30,45:25 America/Los_Angeles'
+systemd-analyze calendar 'Mon..Fri *-*-* 13:20:00 America/Los_Angeles'
+systemctl --user daemon-reload
+systemctl --user enable --now brooks-intraday.timer brooks-recap.timer
+systemctl --user list-timers brooks-intraday.timer brooks-recap.timer
+```
+
+Intraday fires 25 seconds after each decision close from 06:45 through 12:45 PT.
+Recap fires at 13:20 PT. Both timers resume at their next scheduled event after a
+restart. Their scripts use independent nonblocking locks and log in
+`~/.local/state/brooks-forward/intraday-YYYY-MM-DD.log` and
+`~/.local/state/brooks-forward/recap-YYYY-MM-DD.log`. The existing daily wrapper
+keeps its own lock. To regenerate today's recap after the close, invoke
+`forward/deploy/run-recap.sh --force` from the checkout.

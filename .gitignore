@@ -9,3 +9,4 @@ __pycache__/
 .venv/
 
 eval/image_prep_samples/
+samples/

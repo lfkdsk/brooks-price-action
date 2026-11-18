@@ -1,0 +1,12 @@
+[Unit]
+Description=Brooks forward intraday collection
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+Environment=BROOKS_REPO=%h/brooks-price-action
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/brooks-price-action/forward/deploy/run-intraday.sh
+TimeoutStartSec=4h
+UMask=0077
