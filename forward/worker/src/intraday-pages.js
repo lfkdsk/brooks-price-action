@@ -1,5 +1,6 @@
-export const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, c =>
- ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
+import {buildOverlay, candles, escapeHtml, priorLevels} from './intraday-chart.js';
+
+export {escapeHtml};
 
 export function renderMarkdown(markdown) {
  const inline = text => escapeHtml(text).replace(/`([^`]+)`|\*\*([^*]+)\*\*/g,
@@ -47,53 +48,14 @@ details{padding:10px;border-bottom:1px solid #8885}summary{cursor:pointer}.note{
 svg{display:block;width:100%;height:auto}#equity svg{min-width:480px}.candles{min-width:980px}
 svg text{fill:currentColor;font:12px system-ui}.grid{stroke:currentColor;opacity:.2}
 .candle{stroke:var(--wick)}.annotation,.annotation text{fill:var(--annotation)}.annotation line{stroke:var(--annotation)}
+#live-chart .candles{min-width:520px}.decision{fill:#438bdb;cursor:pointer;stroke:currentColor;stroke-width:1}
+.decision:focus,.decision:hover{stroke-width:3}
+#condition-toggles{display:flex;flex-wrap:wrap;gap:.4rem;margin:.8rem 0}
+#condition-toggles button{padding:.3rem .6rem;cursor:pointer}
+#condition-toggles button[aria-pressed=true]{outline:2px solid #438bdb}
+#positions table{width:auto}#positions td,#positions th{padding:5px 9px}
 article{max-width:76ch}nav{margin-bottom:1rem}form{display:flex;flex-wrap:wrap;gap:.5rem;align-items:center}
 </style>${nav}<main><h1>${escapeHtml(title)}</h1>${content}</main></html>`;
-
-function candles(bars, recap) {
- let ema;
- const series = bars.flatMap(b => {
-  ema = ema === undefined ? b.close : ema + 2 / 21 * (b.close - ema);
-  return b.session === recap.session ? [{...b, ema}] : [];
- });
- if (!series.length) return '<p>Session bars are unavailable.</p>';
- const prior = recap.prior;
- const guides = prior ? [[prior.close, 'Prior close'], [prior.low, 'Prior low']] : [];
- const lo = Math.min(...series.flatMap(b => [b.low, b.ema]), ...guides.map(([v]) => v));
- const hi = Math.max(...series.flatMap(b => [b.high, b.ema]), ...guides.map(([v]) => v));
- const spread = Math.max(.01, hi - lo);
- const y = price => 406 - 348 * (price - lo) / spread;
- const count = series.at(-1).bar;
- const step = 970 / count;
- const x = bar => 25 + (bar - .5) * step;
- const width = Math.min(13, step * .72);
- const byBar = new Map(series.map(b => [b.bar, b]));
- const grid = Array.from({length: 6}, (_, i) => {
-  const price = lo + (hi - lo) * i / 5;
-  return `<path class="grid" d="M25 ${y(price)}H995"/><text x="1002" y="${y(price) + 4}">${price.toFixed(2)}</text>`;
- }).join('');
- const axis = series.filter(b => b.bar === 1 || b.bar % 5 === 0)
-  .map(b => `<text x="${x(b.bar)}" y="438" text-anchor="middle">${b.bar}</text>`).join('');
- const bodies = series.map(b => {
-  const cx = x(b.bar), top = y(Math.max(b.open, b.close));
-  return `<g class="candle"><path d="M${cx} ${y(b.high)}V${y(b.low)}"/>
-<rect x="${cx - width / 2}" y="${top}" width="${width}" height="${Math.max(1, y(Math.min(b.open, b.close)) - top)}" fill="${b.close >= b.open ? 'white' : 'black'}"><title>Bar ${b.bar} · O ${b.open} H ${b.high} L ${b.low} C ${b.close}</title></rect></g>`;
- }).join('');
- const lines = guides.map(([price, name], i) => `<path d="M25 ${y(price)}H995" stroke="#828282" stroke-dasharray="${i ? '3 4' : '8 4'}"><title>${name} ${price.toFixed(2)}</title></path>`).join('');
- const annotations = recap.annotations.map(a => {
-  const b = byBar.get(a.bar);
-  if (!b) return '';
-  const cx = x(b.bar), cy = y(a.pos === 'above' ? b.high : b.low);
-  const offset = a.pos === 'above' ? -17 : 19;
-  const label = a.label.length > 22 ? a.label.slice(0, 21) + '…' : a.label;
-  const labelX = Math.min(1080, Math.max(8, cx));
-  const anchor = cx < 130 ? 'start' : cx > 900 ? 'end' : 'middle';
-  return `<g class="annotation"><title>Bar ${a.bar} · ${escapeHtml(a.label)}</title><line x1="${cx}" x2="${cx}" y1="${cy}" y2="${cy + offset * .6}"/><text text-anchor="${anchor}" x="${labelX}" y="${cy + offset}">${escapeHtml(label)}</text></g>`;
- }).join('');
- return `<div class="scroll"><svg class="candles" viewBox="0 0 1090 455" role="img" aria-label="Five-minute candlesticks with EMA20 and annotated bars">
-${grid}${lines}${axis}${bodies}<polyline fill="none" stroke="#438bdb" stroke-width="2" points="${series.map(b => x(b.bar) + ',' + y(b.ema)).join(' ')}"/>${annotations}</svg></div>
-<p>Blue · EMA20${prior ? ' · Dashed · prior close ' + prior.close.toFixed(2) + ' / prior low ' + prior.low.toFixed(2) : ''}</p>`;
-}
 
 export function recapPage(symbol, history, recap, bars) {
  const content = recap ? `<h2>${escapeHtml(recap.session)} · ${escapeHtml(recap.day_type)}</h2>
@@ -109,12 +71,19 @@ ${content}<h2>Past recaps</h2><ul>${history.map(r => '<li><a href="/recap/' + en
 export function intradayPage() {
  return shell('Brooks Forward · 5 分钟模拟仓', `<p class="note">Paper trading only. Simulated next-open prices, not executable orders.</p>
 <form action="/intraday"><label>Symbol <input id="symbol" name="symbol" value="SPY" maxlength="24" required></label><button>View</button><a id="recap" href="/recap">View recap</a></form>
-<p id="status" role="status">Loading…</p><h2>Cumulative equity</h2><div class="scroll" id="equity"></div>
+<p id="status" role="status">Loading…</p>
+<h2>Five-minute chart</h2>
+<label>Session <select id="session"><option value="">Latest session</option></select></label>
+<div id="condition-toggles" role="group" aria-label="Chart condition"></div>
+<div id="live-chart"></div><pre id="decision-detail" aria-live="polite" hidden></pre>
+<h2>Session positions</h2><div class="scroll" id="positions"></div>
+<h2>Cumulative equity</h2><div class="scroll" id="equity"></div>
 <h2>Metrics by condition</h2><div class="scroll" id="metrics"></div>
-<h2 id="timeline-title">Today's decisions</h2><div class="scroll" id="timeline"></div>
+<h2 id="timeline-title">Session decisions</h2><div class="scroll" id="timeline"></div>
 <h2>Latest readings</h2><div id="readings"></div>
 <details><summary>Paired comparisons</summary><pre id="paired"></pre></details>
-<script>${drawEquity.toString()}
+<script>const escapeHtml = ${escapeHtml.toString()};
+${[buildOverlay, priorLevels, candles, drawEquity].map(fn => fn.toString()).join('\n')}
 (${loadIntraday.toString()})()</script>`);
 }
 
@@ -142,46 +111,145 @@ async function loadIntraday() {
  el('symbol').value = symbol;
  const query = new URLSearchParams({symbol});
  el('recap').href = '/recap?' + query;
- const parts = new Intl.DateTimeFormat('en-US', {timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit'})
-  .formatToParts(new Date());
- const date = Object.fromEntries(parts.map(p => [p.type, p.value]));
- const session = date.year + '-' + date.month + '-' + date.day;
- try {
-  const [s, today, recent] = await Promise.all([
-   get('/api/intraday/stats?' + query), get('/api/intraday/predictions?' + query + '&session=' + session + '&limit=200'),
-   get('/api/intraday/predictions?' + query + '&limit=75')
-  ]);
-  el('status').textContent = symbol + ' · ' + s.cost_bps + ' bps per unit changed · ' + s.missed + ' missed points';
-  const conditions = Object.entries(s.conditions);
-  table('metrics', ['Condition', 'Decisions', 'Return', 'Sharpe', 'Max DD', 'Exposure', '+6 hit', 'Coverage', 'Brier',
-   'Log loss', 'Target first', 'Pending +6', 'Pending target/stop', 'Pending entry'], conditions.map(([name, m]) =>
-   [name, m.decisions, m.account.total_return, m.account.annualized_sharpe, m.account.max_drawdown, m.account.exposure,
-    m.direction_hit_rate, m.direction_coverage, m.brier, m.log_loss, m.target_before_stop_rate,
-    m.pending_6, m.pending_horizon, m.pending_entries]));
-  const names = ['skill', 'baseline', 'ema20_5m', 'opening_bar', 'buy_hold'];
-  const byBar = new Map();
-  for (const p of today.predictions) {
-   if (!byBar.has(p.bar)) byBar.set(p.bar, new Map());
-   byBar.get(p.bar).set(p.condition, p.always_in);
+ const select = el('session');
+ let condition = 'skill', selected = null, activeDecision = null, version = 0;
+ const ny = new Intl.DateTimeFormat('en-US', {
+  timeZone: 'America/New_York', weekday: 'short', year: 'numeric', month: '2-digit',
+  day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23'
+ });
+ const local = now => Object.fromEntries(ny.formatToParts(now).map(p => [p.type, p.value]));
+ const renderChart = (resetScroll = false) => {
+  const {bars, predictions, session} = selected;
+  const overlay = buildOverlay(bars, predictions, session, condition);
+  const chart = el('live-chart');
+  const scroll = resetScroll ? 0 : chart.querySelector('.scroll')?.scrollLeft || 0;
+  chart.innerHTML = candles(bars, {session, prior: priorLevels(bars, session), overlay});
+  if (scroll && chart.querySelector('.scroll')) chart.querySelector('.scroll').scrollLeft = scroll;
+  const showDecision = bar => {
+   activeDecision = bar;
+   const p = overlay.decisions.find(row => row.bar === bar);
+   const detail = el('decision-detail');
+   detail.hidden = !p;
+   detail.textContent = p ? [
+    condition + ' · Bar ' + p.bar + ' · ' + p.always_in,
+    'p_up_6 ' + fmt(p.p_up_6) + ' · Target ' + fmt(p.target) + ' · Stop ' + fmt(p.stop),
+    p.reading
+   ].filter(Boolean).join('\n') : '';
+  };
+  for (const marker of chart.querySelectorAll('.decision')) {
+   const show = () => showDecision(Number(marker.dataset.bar));
+   marker.addEventListener('click', show);
+   marker.addEventListener('keydown', e => {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); show(); }
+   });
   }
-  el('timeline-title').textContent = "Today's decisions · " + session + ' ET';
-  if (!byBar.size) el('timeline').textContent = 'No decisions recorded today.';
-  else table('timeline', ['Bar', ...names], [...byBar].sort(([a], [b]) => a - b)
-   .map(([bar, row]) => [bar, ...names.map(n => row.has('missed') ? 'Missed' : row.get(n))]));
-  for (const p of recent.predictions.filter(p => p.reading && p.condition !== 'missed')) {
-   const details = document.createElement('details');
-   const summary = document.createElement('summary'), pre = document.createElement('pre');
-   summary.textContent = p.session + ' · Bar ' + p.bar + ' · ' + p.condition + ' · ' + p.always_in + ' · ' + p.model;
-   pre.textContent = p.reading;
-   details.append(summary, pre);
-   el('readings').append(details);
+  showDecision(activeDecision);
+ };
+ const loadSession = async () => {
+  const request = ++version;
+  const params = new URLSearchParams(query);
+  if (select.value) params.set('session', select.value);
+  try {
+   const data = await get('/api/intraday/session?' + params);
+   if (request !== version) return;
+   const switched = data.session !== selected?.session;
+   if (switched) activeDecision = null;
+   selected = data;
+   const value = select.value;
+   select.replaceChildren(new Option(data.sessions.length ? 'Latest (' + data.sessions[0] + ')' : 'Latest session', ''),
+    ...data.sessions.map(day => new Option(day, day)));
+   select.value = value;
+   const names = Object.keys(data.positions);
+   el('condition-toggles').replaceChildren(...names.map(name => {
+    const button = document.createElement('button');
+    button.textContent = name;
+    button.setAttribute('aria-pressed', name === condition);
+    button.onclick = () => {
+     condition = name;
+     activeDecision = null;
+     for (const toggle of button.parentElement.children)
+      toggle.setAttribute('aria-pressed', toggle === button);
+     renderChart();
+    };
+    return button;
+   }));
+   renderChart(switched);
+   table('positions', ['Condition', 'Position', 'P&L (net)'], names.map(name => {
+    const row = data.positions[name];
+    return [name, row.position, row.return == null ? null : (100 * row.return).toFixed(3) + '%'];
+   }));
+   const byBar = new Map();
+   for (const p of data.predictions) {
+    if (!byBar.has(p.bar)) byBar.set(p.bar, new Map());
+    byBar.get(p.bar).set(p.condition, p.always_in);
+   }
+   el('timeline-title').textContent = data.session ? 'Session decisions · ' + data.session + ' ET' : 'Session decisions';
+   if (!byBar.size) el('timeline').textContent = 'No decisions recorded for this session.';
+   else table('timeline', ['Bar', ...names], [...byBar].sort(([a], [b]) => a - b)
+    .map(([bar, row]) => [bar, ...names.map(n => row.has('missed') ? 'Missed' : row.get(n))]));
+   el('recap').href = (data.session && value ? '/recap/' + data.session : '/recap') + '?' + query;
+  } catch (e) {
+   if (request !== version) return;
+   if (!selected || params.has('session')) {
+    el('live-chart').textContent = 'Unable to load session data (' + e.message + ').';
+    el('decision-detail').hidden = true;
+   }
   }
-  if (!el('readings').children.length) el('readings').textContent = 'No readings available.';
-  el('paired').textContent = JSON.stringify(s.paired, null, 2);
-  drawEquity(el('equity'), conditions);
- } catch (e) {
-  el('status').textContent = 'Unable to load data: ' + e.message;
- }
+ };
+ const loadStats = async () => {
+  try {
+   const [s, recent] = await Promise.all([
+    get('/api/intraday/stats?' + query), get('/api/intraday/predictions?' + query + '&limit=75')
+   ]);
+   el('status').textContent = symbol + ' · ' + s.cost_bps + ' bps per unit changed · ' + s.missed + ' missed points';
+   const conditions = Object.entries(s.conditions);
+   table('metrics', ['Condition', 'Decisions', 'Return', 'Sharpe', 'Max DD', 'Exposure', '+6 hit', 'Coverage', 'Brier',
+    'Log loss', 'Target first', 'Pending +6', 'Pending target/stop', 'Pending entry'], conditions.map(([name, m]) =>
+    [name, m.decisions, m.account.total_return, m.account.annualized_sharpe, m.account.max_drawdown, m.account.exposure,
+     m.direction_hit_rate, m.direction_coverage, m.brier, m.log_loss, m.target_before_stop_rate,
+     m.pending_6, m.pending_horizon, m.pending_entries]));
+   el('readings').replaceChildren();
+   for (const p of recent.predictions.filter(p => p.reading && p.condition !== 'missed')) {
+    const details = document.createElement('details');
+    const summary = document.createElement('summary'), pre = document.createElement('pre');
+    summary.textContent = p.session + ' · Bar ' + p.bar + ' · ' + p.condition + ' · ' + p.always_in + ' · ' + p.model;
+    pre.textContent = p.reading;
+    details.append(summary, pre);
+    el('readings').append(details);
+   }
+   if (!el('readings').children.length) el('readings').textContent = 'No readings available.';
+   el('paired').textContent = JSON.stringify(s.paired, null, 2);
+   drawEquity(el('equity'), conditions);
+  } catch (e) {
+   el('status').textContent = 'Unable to load metrics (' + e.message + ').';
+  }
+ };
+ select.addEventListener('change', loadSession);
+ const refresh = () => Promise.all([loadSession(), loadStats()]);
+ const minutes = d => Number(d.hour) * 60 + Number(d.minute);
+ const sessionOpen = d => {
+  const today = d.year + '-' + d.month + '-' + d.day;
+  return !['Sat', 'Sun'].includes(d.weekday) && minutes(d) >= 570 && minutes(d) < 960 &&
+   !(selected?.sessions[0] === today && selected.latest_final);
+ };
+ const schedule = () => {
+  const now = new Date(), d = local(now);
+  if (sessionOpen(d)) {
+   setTimeout(async () => {
+    if (sessionOpen(local(new Date()))) await refresh();
+    schedule();
+   }, 60000);
+   return;
+  }
+  // Schedule one wakeup for the next weekday open, with no polling overnight.
+  let day = Date.UTC(Number(d.year), Number(d.month) - 1, Number(d.day), 14, 30);
+  if (minutes(d) >= 570) day += 86400000;
+  while ([0, 6].includes(new Date(day).getUTCDay())) day += 86400000;
+  const open = day - (Number(local(day).hour) - 9) * 3600000;
+  setTimeout(async () => { await refresh(); schedule(); }, Math.max(60000, open - now));
+ };
+ await refresh();
+ schedule();
 }
 
 function drawEquity(parent, conditions) {
@@ -191,14 +259,14 @@ function drawEquity(parent, conditions) {
  const min = Math.min(1, ...values), max = Math.max(1, ...values), span = Math.max(.0001, max - min);
  const dateIndex = new Map(days.map((d, i) => [d, i + 1]));
  const x = i => 65 + i / days.length * 725, y = v => 207 - (v - min) / span * 175;
- const colors = ['#438bdb', '#e28830', '#32a778', '#b265c9', '#df5463'];
+ const colors = ['#438bdb', '#e28830', '#32a778', '#b265c9', '#df5463', '#13858c'];
  const svg = (tag, attrs, label) => {
   const el = document.createElementNS('http://www.w3.org/2000/svg', tag);
   for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v);
   if (label !== undefined) el.textContent = label;
   return el;
  };
- const chart = svg('svg', {viewBox: '0 0 820 265', role: 'img', 'aria-label': 'Cumulative equity by condition'});
+ const chart = svg('svg', {viewBox: '0 0 820 287', role: 'img', 'aria-label': 'Cumulative equity by condition'});
  for (let i = 0; i <= 4; i++) {
   const v = min + span * i / 4;
   chart.append(svg('line', {x1: 65, x2: 790, y1: y(v), y2: y(v), class: 'grid'}),
@@ -211,9 +279,10 @@ function drawEquity(parent, conditions) {
   if (!curve.length) return;
   const color = colors[i % colors.length];
   const points = [[x(dateIndex.get(curve[0].date) - 1), y(1)], ...curve.map(d => [x(dateIndex.get(d.date)), y(d.equity)])];
+  const legendX = 65 + i % 5 * 142, legendY = 247 + Math.floor(i / 5) * 20;
   chart.append(svg('polyline', {points: points.map(p => p.join(',')).join(' '), fill: 'none', stroke: color, 'stroke-width': 2}),
-   svg('line', {x1: 65 + i * 142, x2: 81 + i * 142, y1: 247, y2: 247, stroke: color, 'stroke-width': 3}),
-   svg('text', {x: 87 + i * 142, y: 251}, name));
+   svg('line', {x1: legendX, x2: legendX + 16, y1: legendY, y2: legendY, stroke: color, 'stroke-width': 3}),
+   svg('text', {x: legendX + 22, y: legendY + 4}, name));
  });
- parent.append(chart);
+ parent.replaceChildren(chart);
 }

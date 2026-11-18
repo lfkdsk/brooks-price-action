@@ -2,10 +2,12 @@ import datetime as dt
 import json
 import pathlib
 import subprocess
+import sys
+import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
-from intraday import ET, UTC, collect_symbol, decisions, parse_prediction, run_model, session_bars
+from intraday import ET, UTC, collect_symbol, decisions, llm, parse_prediction, run_model, session_bars
 from recap import collect_recap, parse_recap
 
 
@@ -89,9 +91,9 @@ class IntradayTests(unittest.TestCase):
                                            horizon=6, day_type='trend'), 'reading', 'actual'))
         for _ in range(2):
             self.assertEqual(collect_symbol({}, api, 'sha', None, 'SPY', bars, now, forecast), 0)
-        self.assertEqual(forecast.call_count, 2)
+        self.assertEqual(forecast.call_count, 3)
         self.assertEqual({call.args[2][-1]['bar'] for call in forecast.call_args_list}, {9})
-        self.assertEqual(len(api.predictions), 7)
+        self.assertEqual(len(api.predictions), 8)
         self.assertIn((3, 'missed'), api.predictions)
         self.assertIn((6, 'missed'), api.predictions)
         self.assertEqual(collect_symbol({}, api, 'sha', None, 'SPY', [], now, forecast), 0)
@@ -131,6 +133,49 @@ class IntradayTests(unittest.TestCase):
             parsed, _, model = run_model({}, bars, skill, 'prompt', parse_prediction, 'sonnet')
         self.assertEqual((len(calls), parsed['always_in'], model), (2, 'long', 'mock'))
         self.assertEqual(calls[0][-2:], ['--model', 'sonnet'])
+
+    def test_skill_chart_stages_only_chart_csv_and_skill(self):
+        start = when(2026, 7, 9, 9, 30)
+        bars = session_bars('SPY', yahoo_result(session_starts(start, 3)), start + dt.timedelta(minutes=16))
+        skill = pathlib.Path(__file__).resolve().parents[2] / 'skill/brooks-price-action'
+        result = fenced(dict(always_in='long', p_up_6=.7, target=None, stop=None,
+                             horizon_bars=6, day_type='trend'))
+
+        def run(command, **kwargs):
+            stage = kwargs['cwd']
+            if command[0] != 'claude':
+                self.assertEqual(command[0], sys.executable)
+                self.assertEqual(pathlib.Path(command[1]).name, 'render_chart.py')
+                self.assertEqual(command[2:], ['bars.csv', 'chart.png', 'SPY', '2026-07-09'])
+                (stage / 'chart.png').write_bytes(b'mocked render')
+                return subprocess.CompletedProcess(command, 0)
+            self.assertTrue(command[2].startswith('Read chart.png first'))
+            self.assertEqual(command[command.index('--allowedTools') + 1], 'Read,Bash(python3:*)')
+            self.assertEqual({p.name for p in stage.iterdir()}, {'bars.csv', 'chart.png', 'skill'})
+            self.assertEqual({p.relative_to(stage / 'skill') for p in (stage / 'skill').rglob('*') if p.is_file()},
+                             {pathlib.Path('SKILL.md'), pathlib.Path('scripts/bar_features.py'),
+                              *(p.relative_to(skill) for p in (skill / 'references').glob('*.md'))})
+            self.assertEqual((stage / 'chart.png').read_bytes(), b'mocked render')
+            self.assertIn(bars[-1]['ts'], (stage / 'bars.csv').read_text())
+            self.assertNotIn('WRITE_TOKEN', kwargs['env'])
+            return subprocess.CompletedProcess(command, 0, json.dumps({'result': result, 'model': 'mock'}))
+
+        with patch.dict('os.environ', {'WRITE_TOKEN': 'private'}), patch('intraday.subprocess.run', side_effect=run):
+            parsed, _, _ = llm({'chart_python': sys.executable}, 'skill_chart', bars, skill)
+        self.assertEqual(parsed['always_in'], 'long')
+
+    def test_missing_chart_venv_skips_only_candidate(self):
+        start = when(2026, 7, 9, 9, 30)
+        now = start + dt.timedelta(minutes=16)
+        bars = session_bars('SPY', yahoo_result(session_starts(start, 3)), now)
+        api = FakeAPI()
+        with tempfile.TemporaryDirectory() as tmp, patch('intraday.subprocess.run') as run, patch('builtins.print') as log:
+            config = {'chart_python': str(pathlib.Path(tmp) / 'missing/bin/python'),
+                      'intraday_conditions': ['skill_chart', 'opening_bar']}
+            self.assertEqual(collect_symbol(config, api, 'sha', None, 'SPY', bars, now), 0)
+            run.assert_not_called()
+            self.assertIn('chart Python unavailable', str(log.call_args_list))
+        self.assertEqual(set(api.predictions), {(3, 'opening_bar')})
 
 
 class RecapTests(unittest.TestCase):

@@ -76,9 +76,10 @@ def main():
     for symbol in config.get('intraday_symbols', ['SPY']):
         try:
             now = dt.datetime.now(UTC)
-            session = now.astimezone(ET).date().isoformat()
+            session = getattr(args, 'session', None) or now.astimezone(ET).date().isoformat()
             bars = fetch_intraday(symbol, now)
             if not any(b['session'] == session for b in bars):
+                print(f'{symbol} {session}: no regular-session bars (holiday, not yet open, or outside the 5-day window)')
                 continue
             connection = connection or api_and_sha(config)
             api, sha = connection

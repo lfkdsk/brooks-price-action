@@ -39,7 +39,8 @@ function sessionReturn(bb, predictions, cost) {
  pnl += position * (last.close - entry) / base;
  exposed += Math.abs(position) * (last.bar + 1 - previous);
  if (finalBar(last)) fees += Math.abs(position) * cost;
- return {date: last.session, return: pnl - fees, exposure: exposed / last.bar, pending, final: finalBar(last)};
+ return {date: last.session, return: pnl - fees, exposure: exposed / last.bar, pending, final: finalBar(last),
+  position: finalBar(last) || !position ? 'flat' : position > 0 ? 'long' : 'short'};
 }
 
 function score(sessions, predictions, cost) {
@@ -114,6 +115,16 @@ function score(sessions, predictions, cost) {
  };
 }
 
+export function sessionPositions(bars, predictions, conditions, cost_bps) {
+ const groups = group(predictions, p => p.condition);
+ return Object.fromEntries(conditions.map(condition => {
+  const decisions = (groups.get(condition) || []).sort((a, b) => a.bar - b.bar);
+  if (!bars.length || !decisions.length) return [condition, {position: 'flat', return: null}];
+  const result = sessionReturn(bars, decisions, cost_bps / 10000);
+  return [condition, {position: result.position, return: result.return}];
+ }));
+}
+
 export function computeIntradayMetrics(bars, predictions, {cost_bps = 1} = {}) {
  const sessions = group(bars, sessionKey);
  for (const bb of sessions.values()) bb.sort((a, b) => a.bar - b.bar);
@@ -123,7 +134,7 @@ export function computeIntradayMetrics(bars, predictions, {cost_bps = 1} = {}) {
  for (const [condition, pp] of groups) {
   conditions[condition] = score(sessions, pp, cost_bps / 10000);
   paired[condition] = {};
-  for (const m of mechanical) {
+  for (const m of condition === 'skill_chart' ? [...mechanical, 'skill'] : mechanical) {
    if (m === condition) continue;
    const baseline = new Map((groups.get(m) || []).map(p => [pointKey(p), p]));
    const matched = pp.filter(p => baseline.has(pointKey(p)));

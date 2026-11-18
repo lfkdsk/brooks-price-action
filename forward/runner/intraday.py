@@ -24,8 +24,14 @@ CLOSE_MINUTE = 16 * 60
 BAR_MINUTES = 5
 CLOSE_BUFFER = 20
 CADENCE = range(3, 76, 3)
-CONDITIONS = ('skill', 'baseline', 'ema20_5m', 'opening_bar', 'buy_hold')
+CONDITIONS = ('skill', 'skill_chart', 'baseline', 'ema20_5m', 'opening_bar', 'buy_hold')
+LLM_CONDITIONS = ('skill', 'skill_chart', 'baseline')
+CHART_PYTHON = '~/brooks-price-action/.venv-forward/bin/python'
 FIELDS = ('open', 'high', 'low', 'close')
+
+
+class ChartUnavailable(Exception):
+    pass
 
 
 def finite(v):
@@ -154,7 +160,7 @@ def parse_prediction(reading):
                 horizon=h if type(h) is int and 1 <= h <= 12 else 6, day_type=day_type.strip())
 
 
-def run_model(config, bars, skill, instruction, parse, model=None, context=None):
+def run_model(config, bars, skill, instruction, parse, model=None, context=None, *, chart=False, timeout=600):
     if config.get('llm_cli', 'claude') != 'claude':
         raise ValueError('Only Claude CLI is supported')
     with tempfile.TemporaryDirectory(prefix='brooks-intraday-') as name:
@@ -165,9 +171,25 @@ def run_model(config, bars, skill, instruction, parse, model=None, context=None)
             writer = csv.DictWriter(f, fieldnames=columns, extrasaction='ignore')
             writer.writeheader()
             writer.writerows(dict(b, timestamp=b['ts']) for b in bars)
+        if chart:
+            python = pathlib.Path(config.get('chart_python', CHART_PYTHON)).expanduser().absolute()
+            if not python.is_file() or not os.access(python, os.X_OK):
+                raise ChartUnavailable(f'chart Python unavailable at {python}')
+            last = bars[-1]
+            try:
+                subprocess.run(
+                    [str(python), str(HERE / 'render_chart.py'), 'bars.csv', 'chart.png',
+                     last['symbol'], last['session']],
+                    cwd=stage, stdin=subprocess.DEVNULL, capture_output=True, check=True, timeout=30)
+            except (OSError, subprocess.SubprocessError) as exc:
+                stderr = exc.stderr if isinstance(exc, subprocess.CalledProcessError) else None
+                lines = (stderr or b'').decode(errors='replace').strip().splitlines()
+                raise ChartUnavailable(lines[-1] if lines else str(exc)) from exc
+            if not (stage / 'chart.png').is_file():
+                raise ChartUnavailable('renderer did not produce chart.png')
         if context is not None:
             (stage / 'prior.json').write_text(json.dumps(context))
-        if skill:
+        if skill and not chart:
             features = subprocess.run(
                 ['python3', 'skill/scripts/bar_features.py', 'bars.csv', '--last', '78'],
                 cwd=stage, stdin=subprocess.DEVNULL, capture_output=True, text=True,
@@ -176,12 +198,13 @@ def run_model(config, bars, skill, instruction, parse, model=None, context=None)
             instruction += '\nRead skill/SKILL.md and features.txt before writing. Use the CSV session and bar columns for references.'
         for attempt in range(2):
             prompt = instruction + ('\nThe preceding result was invalid. End with strictly valid JSON.' if attempt else '')
-            command = ['claude', '-p', prompt, '--output-format', 'json', '--tools', 'Read',
-                       '--allowedTools', 'Read', '--add-dir', str(stage)]
+            allowed = ['Read', 'Bash(python3:*)'] if chart else ['Read']
+            command = ['claude', '-p', prompt, '--output-format', 'json', '--tools', 'Read,Bash' if chart else 'Read',
+                       '--allowedTools', ','.join(allowed), '--add-dir', str(stage)]
             if model:
                 command += ['--model', model]
             proc = subprocess.run(command, cwd=stage, stdin=subprocess.DEVNULL,
-                                  capture_output=True, text=True, timeout=600,
+                                  capture_output=True, text=True, timeout=timeout,
                                   env={k: v for k, v in os.environ.items() if k != 'WRITE_TOKEN'})
             if proc.returncode:
                 raise RuntimeError(f'Claude exited {proc.returncode}')
@@ -195,14 +218,19 @@ def run_model(config, bars, skill, instruction, parse, model=None, context=None)
 
 def llm(config, condition, bars, skill):
     b = bars[-1]
-    style = 'Use Brooks intraday price action.' if condition == 'skill' else 'Use your own intraday price-action analysis.'
+    style = 'Use Brooks intraday price action.' if condition != 'baseline' else 'Use your own intraday price-action analysis.'
     prompt = f"""Read {b['symbol']} on 5-minute regular-session bars for {b['session']} through bar {b['bar']}.
 {style} Read bars.csv. Refer to today's bar numbers and use previous sessions only for context.
 Forecast the probability that the same-session close six bars later is strictly above this close.
 End with a fenced json block with always_in (long, short or unclear), p_up_6 (number 0–1),
 target and stop (number or null), horizon_bars (integer 1–12), and day_type (short label)."""
-    return run_model(config, bars, skill if condition == 'skill' else None, prompt,
-                     parse_prediction, config.get('intraday_model', 'sonnet'))
+    chart = condition == 'skill_chart'
+    if chart:
+        prompt = ("Read chart.png first for market structure: swings, ranges, patterns, and price "
+                  "relative to EMA20 and prior levels. Then read skill/SKILL.md and take exact "
+                  "prices from bars.csv.\n" + prompt)
+    return run_model(config, bars, skill if condition != 'baseline' else None, prompt,
+                     parse_prediction, config.get('intraday_model', 'sonnet'), chart=chart, timeout=360)
 
 
 def mechanical(condition, bars):
@@ -238,7 +266,7 @@ def collect_symbol(config, api, sha, skill, symbol, bars, now, predict=llm):
                     dict(result, symbol=symbol, session=session, bar=n,
                          ts=ts.isoformat().replace('+00:00', 'Z'), condition=condition,
                          close=b['close'] if b else None, reading=reading, model=model,
-                         skill_sha=sha if condition in ('skill', 'missed') else ''))
+                         skill_sha=sha if condition in ('skill', 'skill_chart', 'missed') else ''))
 
     for n in missed:
         save(n, 'missed', dict(mechanical('buy_hold', bars), always_in='unclear', day_type='missed'),
@@ -252,19 +280,29 @@ def collect_symbol(config, api, sha, skill, symbol, bars, now, predict=llm):
         if (current, condition) in seen:
             return 0
         try:
-            if condition in ('skill', 'baseline'):
+            if condition in LLM_CONDITIONS:
                 result, reading, model = predict(config, condition, recent, skill)
             else:
                 result, reading, model = mechanical(condition, recent), '', 'mechanical-v1'
             save(current, condition, result, reading, model)
             print(f'{symbol} {session} bar {current} {condition}: saved')
             return 0
+        except ChartUnavailable as exc:
+            print(f'{symbol} {session} bar {current} {condition}: skipped ({exc})')
+            return 0
         except Exception as exc:
             print(f'{symbol} {session} bar {current} {condition}: {type(exc).__name__}')
             return 1
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=len(CONDITIONS)) as executor:
-        return sum(executor.map(job, CONDITIONS))
+    conditions = tuple(dict.fromkeys(config.get('intraday_conditions', CONDITIONS)))
+    unknown = set(conditions).difference(CONDITIONS)
+    if unknown:
+        raise ValueError(f'Unknown intraday conditions: {sorted(unknown)}')
+    model_conditions = [condition for condition in conditions if condition in LLM_CONDITIONS]
+    with concurrent.futures.ThreadPoolExecutor(max_workers=config.get('intraday_workers', 3)) as executor:
+        futures = [executor.submit(job, condition) for condition in model_conditions]
+        errors = sum(job(condition) for condition in conditions if condition not in LLM_CONDITIONS)
+        return errors + sum(future.result() for future in futures)
 
 
 def settings(description, force=False):
@@ -272,6 +310,7 @@ def settings(description, force=False):
     parser.add_argument('--config', type=pathlib.Path, default=HERE / 'config.json')
     if force:
         parser.add_argument('--force', action='store_true')
+        parser.add_argument('--session', help='YYYY-MM-DD (America/New_York) to recap; default = today in New York')
     args = parser.parse_args()
     config = json.loads(args.config.read_text())
     skill = (args.config.resolve().parent / config.get('skill_dir', '../../skill/brooks-price-action')).resolve()

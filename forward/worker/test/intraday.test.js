@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {Script} from 'node:vm';
-import {computeIntradayMetrics, decisionBar} from '../src/intraday-metrics.js';
+import {computeIntradayMetrics, decisionBar, sessionPositions} from '../src/intraday-metrics.js';
+import {buildOverlay, priorLevels} from '../src/intraday-chart.js';
 import {intradayPage, recapPage, renderMarkdown} from '../src/intraday-pages.js';
 
 const session = '2026-11-17';
@@ -69,4 +70,43 @@ test('recap headings, lists, code, bold, paragraphs and SVG labels escape HTML',
  assert.match(html, /&lt;\/text&gt;&lt;script&gt;/);
  assert.doesNotMatch(html, /<script>|<img/);
  new Script(intradayPage().match(/<script>([\s\S]+)<\/script>/)[1]);
+});
+
+test('overlay begins at next open, leaves unclear flat, and marks actual transitions', () => {
+ const bars = Array.from({length: 13}, (_, i) => bar(i + 1, {final: +(i === 12)}));
+ const predictions = [prediction(3), prediction(6, {always_in: 'unclear'}),
+  prediction(9, {always_in: 'short'}), prediction(12, {always_in: 'short'})];
+ const overlay = buildOverlay(bars, predictions, session, 'skill');
+ assert.deepEqual(overlay.segments, [
+  {start: 4, end: 7, side: 'long'}, {start: 7, end: 10, side: 'flat'},
+  {start: 10, end: 13, side: 'short'}, {start: 13, end: 14, side: 'short'}
+ ]);
+ assert.deepEqual(overlay.markers.map(m => [m.bar, m.type, m.price]),
+  [[4, 'entry', 'open'], [7, 'exit', 'open'], [10, 'entry', 'open'], [13, 'exit', 'close']]);
+ const active = buildOverlay(bars.slice(0, 9), predictions, session, 'skill');
+ assert.equal(active.decisions.at(-1).bar, 9);
+ assert.equal(active.segments.at(-1).side, 'flat');
+});
+
+test('switching session and condition resets the chart to matching decisions and prior levels', () => {
+ const tomorrow = '2026-11-18';
+ const bars = [bar(3), bar(4, {close: 102}), bar(3, {session: tomorrow}), bar(4, {session: tomorrow})];
+ const predictions = [prediction(3), prediction(3, {session: tomorrow, condition: 'skill_chart', always_in: 'short'})];
+ assert.equal(buildOverlay(bars, predictions, session, 'skill').segments[0].side, 'long');
+ assert.deepEqual(buildOverlay(bars, predictions, tomorrow, 'skill').segments, []);
+ assert.deepEqual(buildOverlay(bars, predictions, tomorrow, 'skill_chart').segments, [{start: 4, end: 5, side: 'short'}]);
+ assert.deepEqual(priorLevels(bars, tomorrow), {close: 102, low: 97});
+});
+
+test('skill_chart pairs with skill on matching decisions and uses shared next-open position accounting', () => {
+ const bars = [bar(1), bar(3), bar(4, {close: 102}), bar(6, {close: 103})];
+ const predictions = [prediction(3), prediction(3, {condition: 'skill_chart'}),
+  prediction(6, {condition: 'skill_chart', always_in: 'short'}), prediction(3, {condition: 'buy_hold'})];
+ const metrics = computeIntradayMetrics(bars, predictions);
+ assert.equal(metrics.paired.skill_chart.skill.n, 1);
+ assert.equal(metrics.paired.skill_chart.buy_hold.n, 1);
+ const positions = sessionPositions(bars, predictions, ['skill_chart', 'baseline'], 1);
+ assert.equal(positions.skill_chart.position, 'long');
+ closeTo(positions.skill_chart.return, .03 - .0001);
+ assert.deepEqual(positions.baseline, {position: 'flat', return: null});
 });

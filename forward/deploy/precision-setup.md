@@ -119,11 +119,16 @@ cd ~/brooks-price-action/forward/worker
 npx wrangler d1 execute brooks_forward --remote --file migrations/0002_intraday.sql
 ```
 
+Already running intraday? The live chart and `skill_chart` use the existing D1
+schema. Set up the chart interpreter below and use the updated Worker before
+the collector starts sending `skill_chart` decisions.
+
 Once the upgraded Worker is live, check `/api/intraday/stats?symbol=SPY` and
 `/api/recaps?symbol=SPY` and install the two new user timers:
 
 ```sh
 cd ~/brooks-price-action
+bash forward/deploy/setup-venv.sh
 mkdir -p ~/.config/systemd/user ~/.local/state/brooks-forward
 cp forward/deploy/brooks-{intraday,recap}.{service,timer} ~/.config/systemd/user/
 systemd-analyze calendar 'Mon..Fri *-*-* 06:45:25 America/Los_Angeles'
@@ -133,6 +138,11 @@ systemctl --user daemon-reload
 systemctl --user enable --now brooks-intraday.timer brooks-recap.timer
 systemctl --user list-timers brooks-intraday.timer brooks-recap.timer
 ```
+
+Run the venv setup as the user that runs the timers. It installs Pillow under
+`~/brooks-price-action/.venv-forward` and can be rerun. Set `chart_python` in
+`forward/runner/config.json` if you use a different venv. The runner and recap
+continue to use system Python, and only the PNG renderer uses the venv.
 
 Intraday fires 25 seconds after each decision close from 06:45 through 12:45 PT.
 Recap fires at 13:20 PT. Both timers resume at their next scheduled event after a

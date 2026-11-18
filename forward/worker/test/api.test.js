@@ -28,3 +28,46 @@ test('public dashboard stats equity and routing',async()=>{
  assert.equal((await call(env,'/api/bars','POST',{bars:[{symbol:'SPY'}]})).status,400);
  assert.equal((await call(env,'/api/runs','POST',{started_at:'now',finished_at:'now',host:'test',ok:true,log:'done'})).status,200);
 });
+
+test('public intraday sessions default to stored bars and accept skill_chart writes', async () => {
+ const earlier = '2026-11-16', latest = '2026-11-17';
+ const bar = (session, n, extras = {}) => ({symbol: 'SPY', session, bar: n, open: 100,
+  high: 104, low: 98, close: 100, final: 0, ...extras});
+ const bars = [bar(earlier, 78, {final: 1}), bar(latest, 1), bar(latest, 3), bar(latest, 4, {close: 103})];
+ const predictions = [];
+ const env = {...make(), DB: {prepare(sql) {
+  return {bind(...args) {
+   assert.equal(args[0], 'SPY');
+   return {
+    async all() {
+     if (sql.includes('GROUP BY session')) return {results: [{session: latest, final: 0}, {session: earlier, final: 1}]};
+     if (sql.includes('FROM ibars')) return {results: bars.filter(b => b.session <= args[1])};
+     assert.match(sql, /FROM ipredictions/);
+     return {results: predictions.filter(row => row.session === args[1])};
+    },
+    async run() {
+     assert.match(sql, /INSERT INTO ipredictions/);
+     const columns = sql.match(/ipredictions\(([^)]+)\)/)[1].split(',');
+     predictions.push(Object.fromEntries(columns.map((key, i) => [key, args[i]])));
+    }
+   };
+  }};
+ }}};
+ const decision = {symbol: 'SPY', session: latest, bar: 3, ts: '2026-11-17T14:40:00Z',
+  condition: 'skill_chart', model: 'test', skill_sha: 'abc', always_in: 'long',
+  p_up_6: .6, target: null, stop: null, horizon: 6, day_type: 'trend', close: 100, reading: 'test'};
+ assert.equal((await call(env, '/api/intraday/predictions', 'POST', decision)).status, 200);
+ const get = suffix => call(env, '/api/intraday/session' + suffix, 'GET', undefined, '');
+ const data = await (await get('')).json();
+ assert.deepEqual(data.sessions, [latest, earlier]);
+ assert.equal(data.session, latest);
+ assert.equal(data.bars.length, 4);
+ assert.deepEqual(data.predictions, [decision]);
+ assert.equal(data.positions.skill_chart.position, 'long');
+ assert.ok(Math.abs(data.positions.skill_chart.return - .0299) < 1e-9);
+ const past = await (await get('?session=' + earlier)).json();
+ assert.equal(past.session, earlier);
+ assert.equal(past.bars.length, 1);
+ assert.deepEqual(past.predictions, []);
+ assert.equal((await get('?session=2026-11-15')).status, 404);
+});

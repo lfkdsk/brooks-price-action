@@ -171,13 +171,21 @@ changes; changing a rule under the same condition name mixes regimes.
 
 ## Five-minute paper trading and daily recap
 
-Open `/intraday?symbol=SPY` for equity, metrics, decisions and readings. Open
-`/recap?symbol=SPY` for the latest Chinese review and chart, or
-`/recap/YYYY-MM-DD?symbol=SPY` for a specific session. The symbols default to SPY
-in `runner/config.json` (`intraday_symbols`). Change `intraday_model` to override
-Sonnet for the two prediction conditions. Recaps use the Claude CLI default model.
-A normal session has 25 decision points and up to 50 forecast calls per symbol,
-plus one recap and up to one retry per invalid model response.
+Open `/intraday?symbol=SPY` for candlesticks, positions, net session P&L, equity,
+metrics, and readings. The chart defaults to the latest session with bars
+and the `skill` overlay. Select a session or condition, and tap a blue decision
+marker to see its probability, target, stop, and reading. The page checks for
+newly stored data every minute during weekday regular-session hours (09:30–16:00
+New York time) and stops when the last stored bar marks the session final.
+Candles update as the collector uploads them. Open `/recap?symbol=SPY` for the
+latest Chinese review and chart, or `/recap/YYYY-MM-DD?symbol=SPY` for a specific
+session.
+
+Configure `intraday_symbols` (default SPY), `intraday_conditions`, and
+`intraday_model` (default Sonnet) in `runner/config.json`. Recaps use the Claude
+CLI default model. A normal session has 25 decision points and up to 75 initial
+forecast calls per symbol, plus one recap and up to one retry per invalid
+model response.
 
 Yahoo 5-minute OHLC is filtered to regular-session starts in 09:30–15:55 ET.
 The runner uses New York zoneinfo, excludes the closing auction and waits 20
@@ -189,8 +197,15 @@ conditions, and records older uncollected points from the current session as
 missed. Recap requires a contiguous completed session and uses the prior daily
 close, high and low from Yahoo. Holidays with no session bars are skipped.
 
-- Skill and plain Claude run in parallel. The skill receives computed features.
-  EMA20 uses the two prior sessions and today's closes through the decision.
+- `skill`, `skill_chart`, and `baseline` run in parallel by default
+  (`intraday_workers` defaults to 3). `skill` receives computed features.
+  `skill_chart` receives the skill, the same CSV, and a PNG of the bars through
+  the decision plus up to 30 previous-session candles. Run
+  `forward/deploy/setup-venv.sh` on the collector to install Pillow. Set
+  `chart_python` to the virtual environment's interpreter if the checkout uses
+  a different location. The collector logs and skips `skill_chart` if the
+  interpreter or chart is unavailable.
+- EMA20 uses the two prior sessions and today's closes through the decision.
   Opening bar follows its body direction, with bodies at or below 25% of the
   range treated as dojis. Buy and hold stays long after its first eligible entry.
   Mechanical forecasts use probability .5 and have no target/stop.
@@ -211,13 +226,15 @@ close, high and low from Yahoo. Holidays with no session bars are skipped.
   included in Brier and log loss. Target/stop use same-session high/low with
   stop winning a double touch. Pending outcomes and unavailable outcomes
   (session ends or bar gaps) are counted separately. Paired metrics use matched
-  symbol, session and decision points.
+  symbol, session and decision points. `skill_chart` is paired with both the
+  mechanical conditions and `skill`.
 
 | Route | Body / result |
 |---|---|
 | POST /api/intraday/bars | `{bars:[{symbol,ts,session,bar,open,high,low,close,volume,final?}]}` |
 | POST /api/intraday/predictions | One forecast with `symbol,session,bar,ts,condition,model,skill_sha,always_in,p_up_6,target,stop,horizon,day_type,close,reading` |
 | GET /api/intraday/predictions?symbol=&session=&condition=&limit= | `{predictions:[…]}`, newest first |
+| GET /api/intraday/session?symbol=&session= | Available sessions, selected bars with EMA warm-up context, decisions and net positions |
 | GET /api/intraday/stats?symbol= | Account, forecast and paired metrics |
 | POST /api/recaps | `{symbol,session,day_type,markdown,annotations,levels,model,skill_sha,prior?,force?}` |
 | GET /api/recaps?symbol=&session= | `{recaps:[…]}`, latest first, symbol defaults to SPY |

@@ -1,8 +1,13 @@
-import {computeIntradayMetrics, decisionBar, mechanical} from './intraday-metrics.js';
+import {computeIntradayMetrics, decisionBar, mechanical, sessionPositions} from './intraday-metrics.js';
 import {intradayPage, recapPage} from './intraday-pages.js';
 
 export const intradayWrites = ['/api/intraday/bars', '/api/intraday/predictions', '/api/recaps'];
-const conditions = ['skill', 'baseline', ...mechanical, 'missed'];
+const activeConditions = ['skill', 'skill_chart', 'baseline', ...mechanical];
+const conditions = [...activeConditions, 'missed'];
+const costBps = env => {
+ const cost = Number(env.INTRADAY_COST_BPS ?? 1);
+ return Number.isFinite(cost) && cost >= 0 ? cost : 1;
+};
 const ny = new Intl.DateTimeFormat('en-US', {timeZone: 'America/New_York',
  year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23'});
 const label = (s, max) => typeof s === 'string' && !!s.trim() && s.length <= max;
@@ -93,7 +98,7 @@ export function intradayRoutes({json, date, number, symbol, text, all}) {
   const path = u.pathname, db = env.DB, params = u.searchParams;
   const sym = params.get('symbol'), session = params.get('session'), condition = params.get('condition');
   if (path === '/intraday') return html(intradayPage());
-  if (!['/api/intraday/predictions', '/api/intraday/stats', '/api/recaps', '/recap'].includes(path) &&
+  if (!['/api/intraday/predictions', '/api/intraday/stats', '/api/intraday/session', '/api/recaps', '/recap'].includes(path) &&
       !path.startsWith('/recap/')) return undefined;
   if ((sym !== null && !symbol(sym)) || (session !== null && !date(session))) return invalid('filter');
   if (path === '/api/intraday/predictions') {
@@ -112,10 +117,24 @@ export function intradayRoutes({json, date, number, symbol, text, all}) {
     all(db, 'SELECT symbol,session,bar,open,high,low,close,final FROM ibars' + where, args),
     all(db, 'SELECT symbol,session,bar,condition,always_in,p_up_6,target,stop,horizon FROM ipredictions' + where, args)
    ]);
-   const cost = Number(env.INTRADAY_COST_BPS ?? 1);
-   return json(computeIntradayMetrics(bars, preds, {cost_bps: Number.isFinite(cost) && cost >= 0 ? cost : 1}));
+   return json(computeIntradayMetrics(bars, preds, {cost_bps: costBps(env)}));
   }
   const selected = sym || 'SPY';
+  if (path === '/api/intraday/session') {
+   const days = await all(db, 'SELECT session, MAX(final) AS final FROM ibars WHERE symbol=? GROUP BY session ORDER BY session DESC', [selected]);
+   const sessions = days.map(row => row.session);
+   const day = session || sessions[0] || null;
+   const index = sessions.indexOf(day);
+   if (session && index < 0) return json({error: 'Session bars unavailable'}, 404);
+   if (!day) return json({session: null, sessions, latest_final: false, bars: [], predictions: [],
+    positions: sessionPositions([], [], activeConditions, costBps(env))});
+   const [bars, predictions] = await Promise.all([
+    contextBars(db, selected, day),
+    all(db, 'SELECT * FROM ipredictions WHERE symbol=? AND session=? ORDER BY bar,condition', [selected, day])
+   ]);
+   return json({session: day, sessions, latest_final: Boolean(days[0]?.final), bars, predictions,
+    positions: sessionPositions(bars.filter(b => b.session === day), predictions, activeConditions, costBps(env))});
+  }
   if (path === '/api/recaps') {
    const rows = await all(db, 'SELECT * FROM recaps WHERE symbol=?' +
     (session ? ' AND session=?' : '') + ' ORDER BY session DESC LIMIT 100', session ? [selected, session] : [selected]);
@@ -128,10 +147,14 @@ export function intradayRoutes({json, date, number, symbol, text, all}) {
   const rows = day ? await all(db, 'SELECT * FROM recaps WHERE symbol=? AND session=?', [selected, day]) : [];
   if (!rows.length && requested) return json({error: 'Not found'}, 404);
   const recap = rows.length ? decodeRecap(rows[0]) : null;
-  const bars = recap ? await all(db, 'SELECT * FROM ibars WHERE symbol=? AND session<=? AND session IN ' +
-   '(SELECT DISTINCT session FROM ibars WHERE symbol=? AND session<=? ORDER BY session DESC LIMIT 3) ORDER BY session,bar',
-   [selected, day, selected, day]) : [];
+  const bars = recap ? await contextBars(db, selected, day) : [];
   return html(recapPage(selected, history, recap, bars));
+ }
+
+ function contextBars(db, selected, day) {
+  return all(db, 'SELECT * FROM ibars WHERE symbol=? AND session<=? AND session IN ' +
+   '(SELECT DISTINCT session FROM ibars WHERE symbol=? AND session<=? ORDER BY session DESC LIMIT 3) ORDER BY session,bar',
+   [selected, day, selected, day]);
  }
 
  return {read, write};
