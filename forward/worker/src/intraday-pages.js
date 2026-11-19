@@ -82,7 +82,9 @@ export function intradayPage() {
 <h2 id="timeline-title">Session decisions</h2><div class="scroll" id="timeline"></div>
 <h2>Latest readings</h2><div id="readings"></div>
 <details><summary>Paired comparisons</summary><pre id="paired"></pre></details>
-<script>const escapeHtml = ${escapeHtml.toString()};
+<script>// wrangler/esbuild keep_names wraps serialized functions in __name(); define it for the browser.
+var __name = (fn, _name) => fn;
+const escapeHtml = ${escapeHtml.toString()};
 ${[buildOverlay, priorLevels, candles, drawEquity].map(fn => fn.toString()).join('\n')}
 (${loadIntraday.toString()})()</script>`);
 }
