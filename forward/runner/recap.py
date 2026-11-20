@@ -28,6 +28,25 @@ def prior_daily(symbol, today):
                 low_3m=min(d['low'] for d in recent), recent_daily=daily[-60:])
 
 
+def voo_mapping(session, symbol_close_today=None):
+    """VOO tracks the same index as SPY; return VOO's close on `session` and the VOO/SPY price ratio."""
+    try:
+        out = {}
+        for sym in ('VOO', 'SPY'):
+            result = yahoo(sym, 'range=10d&interval=1d')
+            quote = result['indicators']['quote'][0]
+            for i, stamp in enumerate(result.get('timestamp') or []):
+                day = dt.datetime.fromtimestamp(stamp, ET).date().isoformat()
+                values = prices(quote, i)
+                if day == session and values:
+                    out[sym] = round(values['close'], 2)
+        if len(out) == 2:
+            return dict(voo_close=out['VOO'], spy_close=out['SPY'], voo_per_spy=round(out['VOO'] / out['SPY'], 5))
+    except Exception:
+        pass
+    return None
+
+
 def label(value, size=200):
     return isinstance(value, str) and bool(value.strip()) and len(value) <= size
 
@@ -68,6 +87,9 @@ def collect_recap(config, api, sha, skill, symbol, session, bars, force=False,
     if not today[-1]['final'] or numbers != set(range(1, today[-1]['bar'] + 1)):
         raise ValueError('Full regular-session bars unavailable')
     prior = daily(symbol, session)
+    voo = voo_mapping(session) if symbol == 'SPY' else None
+    if voo:
+        prior = dict(prior, voo=voo)
     prompt = f"""Review the completed {symbol} 5-minute regular session on {session} in bars.csv.
 Use earlier sessions as context. prior.json has the previous daily close/high/low, the daily EMA20,
 3-month high/low and recent_daily (the last ~60 completed daily bars, oldest first) for daily-chart context.
@@ -76,7 +98,13 @@ START with a section headed exactly "**整体判断**" (3-6 short lines): the da
 range, Always In direction, where price is vs the daily EMA20 and recent swings, any measured-move target reached,
 climax or not); then the next 1-3 trading days as two or three scenarios with rough Brooks-style odds that sum to
 about 100% (e.g. 反弹/回调 约60%, 继续下跌 约40%), each with its price zone; the single most important level and what
-would change the view. Be honest about uncertainty; no buy/sell instructions. Then continue with day type, a numbered-bar narrative with evidence (opening range, breakouts, spikes or climaxes,
+would change the view. Be honest about uncertainty; no buy/sell instructions.
+If prior.json has "voo" (VOO tracks the same S&P 500 index; voo_per_spy is today's VOO/SPY price ratio), then wherever
+you give a key SPY level in 整体判断 and in the "明日关注" part, also give the VOO equivalent as "SPY 710（VOO ≈ 652）"
+(multiply by voo_per_spy, round to whole dollars), and end 明日关注 with one line headed "**VOO 视角**" for long-term
+holders (VOO cannot be shorted in a cash account): which VOO zones are support worth watching and what Brooks-style
+signal (e.g. strong bull reversal bar with follow-through, higher low / double bottom) would confirm a bottom vs a
+bear-flag bounce. Educational only, no orders or position sizes. Then continue with day type, a numbered-bar narrative with evidence (opening range, breakouts, spikes or climaxes,
 reversals, higher lows or lower highs, and tests of breakout points where applicable), key levels,
 daily-chart context, what to watch tomorrow, and an educational/non-advice disclaimer.
 Finish with a fenced json block of day_type (string), annotations (up to 12 objects containing
