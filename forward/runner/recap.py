@@ -7,14 +7,25 @@ from intraday import (ET, UTC, api_and_sha, fetch_intraday, final_json, finite, 
 
 
 def prior_daily(symbol, today):
-    result = yahoo(symbol, 'range=5d&interval=1d')
+    """Previous daily close/high/low plus the last ~60 completed daily bars, daily EMA20 and 3-month extremes."""
+    result = yahoo(symbol, 'range=6mo&interval=1d')
     quote = result['indicators']['quote'][0]
-    for i, stamp in reversed(list(enumerate(result.get('timestamp') or []))):
+    daily = []
+    for i, stamp in enumerate(result.get('timestamp') or []):
         session = dt.datetime.fromtimestamp(stamp, ET).date().isoformat()
         values = prices(quote, i)
         if session < today and values:
-            return dict(session=session, **{k: values[k] for k in ('close', 'high', 'low')})
-    raise ValueError('Previous daily bar unavailable')
+            daily.append(dict(date=session, **{k: round(values[k], 2) for k in ('open', 'high', 'low', 'close')}))
+    if not daily:
+        raise ValueError('Previous daily bar unavailable')
+    ema, k = daily[0]['close'], 2 / 21
+    for d in daily:
+        ema = k * d['close'] + (1 - k) * ema
+    last = daily[-1]
+    recent = daily[-63:]
+    return dict(session=last['date'], close=last['close'], high=last['high'], low=last['low'],
+                daily_ema20=round(ema, 2), high_3m=max(d['high'] for d in recent),
+                low_3m=min(d['low'] for d in recent), recent_daily=daily[-60:])
 
 
 def label(value, size=200):
@@ -58,9 +69,14 @@ def collect_recap(config, api, sha, skill, symbol, session, bars, force=False,
         raise ValueError('Full regular-session bars unavailable')
     prior = daily(symbol, session)
     prompt = f"""Review the completed {symbol} 5-minute regular session on {session} in bars.csv.
-Use earlier sessions as context and prior.json for previous daily close, high and low.
-Write a concise Chinese Markdown recap (aim for at most 450 Chinese characters, Brooks terms in English).
-Include day type, a numbered-bar narrative with evidence (opening range, breakouts, spikes or climaxes,
+Use earlier sessions as context. prior.json has the previous daily close/high/low, the daily EMA20,
+3-month high/low and recent_daily (the last ~60 completed daily bars, oldest first) for daily-chart context.
+Write a concise Chinese Markdown recap (aim for at most 650 Chinese characters, Brooks terms in English).
+START with a section headed exactly "**整体判断**" (3-6 short lines): the daily-chart picture (trend or trading
+range, Always In direction, where price is vs the daily EMA20 and recent swings, any measured-move target reached,
+climax or not); then the next 1-3 trading days as two or three scenarios with rough Brooks-style odds that sum to
+about 100% (e.g. 反弹/回调 约60%, 继续下跌 约40%), each with its price zone; the single most important level and what
+would change the view. Be honest about uncertainty; no buy/sell instructions. Then continue with day type, a numbered-bar narrative with evidence (opening range, breakouts, spikes or climaxes,
 reversals, higher lows or lower highs, and tests of breakout points where applicable), key levels,
 daily-chart context, what to watch tomorrow, and an educational/non-advice disclaimer.
 Finish with a fenced json block of day_type (string), annotations (up to 12 objects containing
