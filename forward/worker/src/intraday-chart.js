@@ -1,5 +1,6 @@
-export const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, c =>
- ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
+import {escapeHtml} from './ui-common.js';
+
+export {escapeHtml};
 
 export function buildOverlay(bars, predictions, session, condition) {
  const today = bars.filter(b => b.session === session);
@@ -32,65 +33,6 @@ export function priorLevels(bars, session) {
  return {close: previous.close, low: Math.min(...bars.filter(b => b.session === previous.session).map(b => b.low))};
 }
 
-// The shared SVG renderer runs in the Worker for recaps and in the browser for live sessions.
-export function candles(bars, {session, prior, annotations = [], overlay}) {
- let ema;
- const series = bars.flatMap(b => {
-  ema = ema === undefined ? b.close : ema + 2 / 21 * (b.close - ema);
-  return b.session === session ? [{...b, ema}] : [];
- });
- if (!series.length) return '<p>Session bars are unavailable.</p>';
- const guides = prior ? [[prior.close, 'Prior close'], [prior.low, 'Prior low']] : [];
- const lo = Math.min(...series.flatMap(b => [b.low, b.ema]), ...guides.map(([v]) => v));
- const hi = Math.max(...series.flatMap(b => [b.high, b.ema]), ...guides.map(([v]) => v));
- const spread = Math.max(.01, hi - lo);
- const y = price => 406 - 348 * (price - lo) / spread;
- const count = series.at(-1).bar;
- const step = 970 / count;
- const x = bar => 25 + (bar - .5) * step;
- const width = Math.min(13, step * .72);
- const byBar = new Map(series.map(b => [b.bar, b]));
- const grid = Array.from({length: 6}, (_, i) => {
-  const price = lo + (hi - lo) * i / 5;
-  return `<path class="grid" d="M25 ${y(price)}H995"/><text x="1002" y="${y(price) + 4}">${price.toFixed(2)}</text>`;
- }).join('');
- const axis = series.filter(b => b.bar === 1 || b.bar % 5 === 0)
-  .map(b => `<text x="${x(b.bar)}" y="438" text-anchor="middle">${b.bar}</text>`).join('');
- const bodies = series.map(b => {
-  const cx = x(b.bar), top = y(Math.max(b.open, b.close));
-  return `<g class="candle"><path d="M${cx} ${y(b.high)}V${y(b.low)}"/>
-<rect x="${cx - width / 2}" y="${top}" width="${width}" height="${Math.max(1, y(Math.min(b.open, b.close)) - top)}" fill="${b.close >= b.open ? 'white' : 'black'}"><title>Bar ${b.bar} · O ${b.open} H ${b.high} L ${b.low} C ${b.close}</title></rect></g>`;
- }).join('');
- const lines = guides.map(([price, name], i) => `<path d="M25 ${y(price)}H995" stroke="#828282" stroke-dasharray="${i ? '3 4' : '8 4'}"><title>${name} ${price.toFixed(2)}</title></path>`).join('');
- const labels = annotations.map(a => {
-  const b = byBar.get(a.bar);
-  if (!b) return '';
-  const cx = x(b.bar), cy = y(a.pos === 'above' ? b.high : b.low);
-  const offset = a.pos === 'above' ? -17 : 19;
-  const label = a.label.length > 22 ? a.label.slice(0, 21) + '…' : a.label;
-  const labelX = Math.min(1080, Math.max(8, cx));
-  const anchor = cx < 130 ? 'start' : cx > 900 ? 'end' : 'middle';
-  return `<g class="annotation"><title>Bar ${a.bar} · ${escapeHtml(a.label)}</title><line x1="${cx}" x2="${cx}" y1="${cy}" y2="${cy + offset * .6}"/><text text-anchor="${anchor}" x="${labelX}" y="${cy + offset}">${escapeHtml(label)}</text></g>`;
- }).join('');
- const shading = (overlay?.segments || []).filter(s => s.side !== 'flat').map(s =>
-  `<rect x="${x(s.start) - step / 2}" y="42" width="${(s.end - s.start) * step}" height="380"
-  fill="${s.side === 'long' ? '#279d65' : '#d84957'}" opacity=".2"/>`).join('');
- const markers = (overlay?.markers || []).map(m => {
-  const cx = x(m.bar), cy = y(byBar.get(m.bar)[m.price]);
-  return m.type === 'exit'
-   ? `<rect x="${cx - 3}" y="${cy - 17}" width="6" height="6" fill="#d17929"><title>Exit ${m.side} · bar ${m.bar}</title></rect>`
-   : `<path d="M${cx} ${cy + 4}l-5 8h10Z" fill="${m.side === 'long' ? '#279d65' : '#d84957'}"><title>Enter ${m.side} · bar ${m.bar}</title></path>`;
- }).join('') + (overlay?.decisions || []).map(p => {
-  const cx = x(p.bar);
-  return `<circle class="decision" cx="${cx}" cy="24" r="5" tabindex="0" role="button" data-bar="${p.bar}"
-  aria-label="Decision at bar ${p.bar}"><title>Decision at bar ${p.bar}</title></circle>`;
- }).join('');
- return `<div class="scroll"><svg class="candles" viewBox="0 0 1090 455" role="${overlay ? 'group' : 'img'}" aria-label="Five-minute candlesticks with EMA20">
-${shading}${grid}${lines}${axis}${bodies}<polyline fill="none" stroke="#438bdb" stroke-width="2" points="${series.map(b => x(b.bar) + ',' + y(b.ema)).join(' ')}"/>${labels}${markers}</svg></div>
-<p>Blue · EMA20${prior ? ' · Dashed · prior close ' + prior.close.toFixed(2) + ' / prior low ' + prior.low.toFixed(2) : ''}</p>`;
-}
-
-
 // Pacific clock time for the start of regular-session bar n (09:30 ET = 06:30 PT all year).
 export function ptClock(n) {
  const m = 390 + (n - 1) * 5;
@@ -99,7 +41,8 @@ export function ptClock(n) {
 
 // Live-session SVG for /intraday. Rendered in the browser at the container's pixel width
 // so text stays legible on phones; wider than the container means horizontal scroll.
-export function liveChart(bars, {session, prior, overlay, latest, activeBar = null, viewWidth = 900, height = 420, minStep = 9}) {
+export function liveChart(bars, {session, prior, overlay, latest, activeBar = null, viewWidth = 900, height = 420, minStep = 9,
+ annotations = [], levels = []}) {
  let ema;
  const series = bars.flatMap(b => {
   ema = ema === undefined ? b.close : ema + 2 / 21 * (b.close - ema);
@@ -120,6 +63,11 @@ export function liveChart(bars, {session, prior, overlay, latest, activeBar = nu
  const guides = [];
  if (prior) guides.push({price: prior.close, label: '昨收', cls: 'g-prior', dash: '7 4', from: 1},
   {price: prior.low, label: '昨低', cls: 'g-prior', dash: '2 4', from: 1});
+ for (const l of levels || []) {
+  // Recap key levels; skip ones that repeat a line already drawn (e.g. prior close).
+  if (guides.some(g => Math.abs(g.price - l.price) <= l.price * 2e-4)) continue;
+  guides.push({price: l.price, label: l.label, cls: 'g-level', dash: '4 3', from: 1});
+ }
  if (latest) {
   if (latest.target != null) guides.push({price: latest.target, label: '目标', cls: 'g-target', dash: '6 3', from: latest.bar});
   if (latest.stop != null) guides.push({price: latest.stop, label: '止损', cls: 'g-stop', dash: '6 3', from: latest.bar});
@@ -128,7 +76,7 @@ export function liveChart(bars, {session, prior, overlay, latest, activeBar = nu
  for (const g of guides) g.inside = g.price >= coreLo - reach && g.price <= coreHi + reach;
  const inside = guides.filter(g => g.inside).map(g => g.price);
  let lo = Math.min(coreLo, ...inside), hi = Math.max(coreHi, ...inside);
- const pad = Math.max(.02, (hi - lo) * .09);
+ const pad = Math.max(.02, (hi - lo) * (annotations.length ? .15 : .09));
  lo -= pad;
  hi += pad;
  const plotBottom = height - bottom;
@@ -140,10 +88,21 @@ export function liveChart(bars, {session, prior, overlay, latest, activeBar = nu
   out.push(`<rect class="shade-${s.side}" x="${x(s.start) - step / 2}" y="${top}" width="${(s.end - s.start) * step}" height="${plotBottom - top}"/>`);
  }
  const tagY = y(last.close);
+ // Key levels carry only their price, in the right-hand axis gutter (names are listed under the chart).
+ const gutter = [];
+ for (const g of guides.filter(g => g.cls === 'g-level' && g.inside).sort((a, b) => b.price - a.price)) {
+  const py = y(g.price) + 4;
+  const ok = v => v >= top + 8 && v <= plotBottom && Math.abs(v - tagY - 4) >= 15 && !gutter.some(o => Math.abs(o - v) < 12);
+  const gy = [0, 11, -11, 22, -22, 33, -33].map(d => py + d).find(ok);
+  if (gy === undefined) continue;
+  gutter.push(gy);
+  out.push(`<text class="axis glevel" x="${plotRight + 6}" y="${gy}"><title>${escapeHtml(g.label)}</title>${f2(g.price)}</text>`);
+ }
  for (let i = 0; i <= 4; i++) {
   const p = lo + (hi - lo) * (i + .5) / 5;
   out.push(`<path class="grid" d="M${left} ${y(p)}H${plotRight}"/>`);
-  if (Math.abs(y(p) - tagY) > 14) out.push(`<text class="axis" x="${plotRight + 6}" y="${y(p) + 4}">${f2(p)}</text>`);
+  if (Math.abs(y(p) - tagY) > 14 && !gutter.some(v => Math.abs(v - y(p) - 4) < 15))
+   out.push(`<text class="axis" x="${plotRight + 6}" y="${y(p) + 4}">${f2(p)}</text>`);
  }
  for (let n = 1; n <= Math.min(78, slots); n += 6) {
   out.push(`<path class="tick" d="M${x(n)} ${plotBottom}v4"/><text class="axis" text-anchor="middle" x="${x(n)}" y="${plotBottom + 16}">${n}</text>` +
@@ -153,14 +112,18 @@ export function liveChart(bars, {session, prior, overlay, latest, activeBar = nu
  const placed = [];
  const labelAt = (g, py, text) => {
   const side = g.cls === 'g-prior' ? 'left' : 'right';
-  // Labels sit just above their line; a crowded label flips below it.
-  let ly = py - 4;
-  if (placed.some(p => p.side === side && Math.abs(p.y - ly) < 13)) ly = py + 13;
+  // Labels sit just above their line; a crowded label moves below it, then further out.
+  const free = v => v >= top + 9 && v <= plotBottom - 2 && !placed.some(p => p.side === side && Math.abs(p.y - v) < 13);
+  let ly = [-4, 13, -17, 26, -30, 39, -43, 52, -56, 65].map(d => py + d).find(free) ?? py - 4;
   placed.push({side, y: ly});
   const lx = side === 'left' ? left + 4 : plotRight - 4;
-  return `<text class="glabel ${g.cls}" x="${lx}" y="${ly}" text-anchor="${side === 'left' ? 'start' : 'end'}">${text}</text>`;
+  return `<text class="glabel ${g.cls}" x="${lx}" y="${ly}" text-anchor="${side === 'left' ? 'start' : 'end'}">${escapeHtml(text)}</text>`;
  };
  for (const g of guides) {
+  if (g.cls === 'g-level') {
+   if (g.inside) out.push(`<path class="guide g-level" stroke-dasharray="${g.dash}" d="M${left} ${y(g.price)}H${plotRight}"><title>${escapeHtml(g.label + ' ' + f2(g.price))}</title></path>`);
+   continue;
+  }
   if (g.inside) {
    out.push(`<path class="guide ${g.cls}" stroke-dasharray="${g.dash}" d="M${g.cls === 'g-prior' ? left : x(g.from)} ${y(g.price)}H${plotRight}"/>` +
     labelAt(g, y(g.price), g.label + ' ' + f2(g.price)));
@@ -177,6 +140,23 @@ export function liveChart(bars, {session, prior, overlay, latest, activeBar = nu
    `<title>第${b.bar}根 ${ptClock(b.bar)} PT · 开 ${f2(b.open)} 高 ${f2(b.high)} 低 ${f2(b.low)} 收 ${f2(b.close)}</title></g>`);
  }
  out.push(`<polyline class="ema" points="${series.map(b => x(b.bar).toFixed(1) + ',' + y(b.ema).toFixed(1)).join(' ')}"/>`);
+ const boxes = [];
+ for (const a of annotations || []) {
+  const b = byBar.get(a.bar);
+  if (!b) continue;
+  const above = a.pos === 'above', cx = x(a.bar), cy = y(above ? b.high : b.low);
+  const text = a.label.length > 24 ? a.label.slice(0, 23) + '…' : a.label;
+  const w = [...text].reduce((n, c) => n + (c.charCodeAt(0) > 0x2e80 ? 11 : 6.3), 0);
+  const lx = Math.min(plotRight - w / 2, Math.max(left + w / 2, cx));
+  // Stack away from the bar until the label box clears earlier labels.
+  let ly = above ? cy - 14 : cy + 22;
+  for (let k = 0; k < 12 && boxes.some(o => Math.abs(o.x - lx) < (o.w + w) / 2 + 4 && Math.abs(o.y - ly) < 13); k++) ly += above ? -13 : 13;
+  ly = Math.min(plotBottom - 3, Math.max(top + 10, ly));
+  boxes.push({x: lx, y: ly, w});
+  out.push(`<g class="ann"><title>第${a.bar}根 ${ptClock(a.bar)} PT · ${escapeHtml(a.label)}</title><circle cx="${cx}" cy="${above ? cy - 3 : cy + 3}" r="2.2"/>` +
+   `<line x1="${cx}" x2="${cx}" y1="${above ? cy - 3 : cy + 3}" y2="${above ? ly + 3 : ly - 11}"/>` +
+   `<text text-anchor="middle" x="${lx}" y="${ly}">${escapeHtml(text)}</text></g>`);
+ }
  for (const p of overlay?.decisions || []) {
   const b = byBar.get(p.bar);
   if (!b) continue;
