@@ -244,7 +244,23 @@ export function topNav(current) {
   '<a href="' + href + '"' + (key === current ? ' aria-current="page"' : '') + '>' + text + '</a>').join('') + '</nav></header>';
 }
 
+// Bundlers rename colliding top-level identifiers (escapeHtml -> escapeHtml2, num -> num2) inside the serialized
+// functions' bodies. After the whole page script is assembled, alias every `<defined name><digits>` reference
+// back to the defined function so page code works whatever names the bundler chose.
+export function aliasRenamed(script) {
+ const defined = new Set([...script.matchAll(/\bvar ([A-Za-z_$][\w$]*) =/g)].map(m => m[1]));
+ const aliases = new Set();
+ for (const m of script.matchAll(/\b([A-Za-z_$][A-Za-z_$]*?)(\d+)\b/g)) {
+  const [token, base] = m;
+  if (defined.has(base) && !defined.has(token)) aliases.add('function ' + token + '(...a) { return ' + base + '.apply(this, a); }');
+ }
+ if (!aliases.size) return script;
+ // Function declarations are hoisted, so these delegating aliases work wherever they appear in the script.
+ return script + '\n' + [...aliases].join('\n');
+}
+
 export function pageShell({title, current, css = '', body, after = '', script = ''}) {
+ script = script && aliasRenamed(script);
  return `<!doctype html><html lang="zh-CN"><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(title)}</title>
 <style>${baseCss}${css}</style>
