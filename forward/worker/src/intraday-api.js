@@ -30,7 +30,7 @@ function timestamp(row) {
  return row.session === `${d.year}-${d.month}-${d.day}` && Number(d.hour) * 60 + Number(d.minute) === 570 + (row.bar - 1) * 5;
 }
 
-export function intradayRoutes({json, date, number, symbol, text, all}) {
+export function intradayRoutes({json, date, number, symbol, text, all, levelsField = () => true, levelsValue, withLevels}) {
  const positive = x => number(x) && x > 0;
  const identity = row => row && symbol(row.symbol) && date(row.session);
  const invalid = kind => json({error: 'Invalid ' + kind}, 400);
@@ -66,10 +66,12 @@ export function intradayRoutes({json, date, number, symbol, text, all}) {
     !Number.isInteger(p.horizon) || p.horizon < 1 || p.horizon > 12 ||
     (!positive(p.close) && !(p.condition === 'missed' && p.close === null)) ||
     !['target', 'stop'].every(k => p[k] === null || number(p[k])) ||
-    !text(p.model) || !text(p.skill_sha) || !text(p.day_type) || !text(p.reading, 200000)) return invalid('prediction');
+    !text(p.model) || !text(p.skill_sha) || !text(p.day_type) || !text(p.reading, 200000) ||
+    !levelsField(p.levels_ok)) return invalid('prediction');
    const cols = fields.predictions;
-   await db.prepare(insert('ipredictions', cols) + ' ON CONFLICT(symbol,session,bar,condition) DO NOTHING')
-    .bind(...cols.map(k => p[k])).run();
+   const sql = c => db.prepare(insert('ipredictions', c) + ' ON CONFLICT(symbol,session,bar,condition) DO NOTHING');
+   if (withLevels) await withLevels(cols, {...p, levels_ok: levelsValue(p, p.close)}, sql, false);
+   else await sql(cols).bind(...cols.map(k => p[k])).run();
    return json({ok: true});
   }
   const r = body;

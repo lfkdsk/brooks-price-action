@@ -1,4 +1,4 @@
-import {barrier} from './metrics.js';
+import {barrier, calibration} from './metrics.js';
 
 export const mechanical = ['ema20_5m', 'opening_bar', 'buy_hold'];
 export const decisionBar = n => Number.isInteger(n) && n >= 3 && n <= 75 && n % 3 === 0;
@@ -44,7 +44,7 @@ function sessionReturn(bb, predictions, cost) {
 }
 
 function score(sessions, predictions, cost) {
- const rows = [], hits = [], brier = [], losses = [];
+ const rows = [], hits = [], brier = [], losses = [], pairs = [];
  const target_stop = {};
  let pending_6 = 0, pending_horizon = 0, unavailable_6 = 0, unavailable_horizon = 0;
  let missing_bars = 0, pending_entries = 0;
@@ -75,6 +75,7 @@ function score(sessions, predictions, cost) {
     if (d) hits.push(+((d === 1) === !!y));
     brier.push((p.p_up_6 - y) ** 2);
     losses.push(y ? -Math.log(q) : -Math.log(1 - q));
+    pairs.push([p.p_up_6, y]);
    } else if (pending(p.bar + 6)) pending_6++;
    else unavailable_6++;
    let outcome = barrier(p, [], current.close);
@@ -107,12 +108,34 @@ function score(sessions, predictions, cost) {
   decisions: predictions.length, mature: brier.length, pending_6, pending_horizon, pending_entries,
   unavailable_6, unavailable_horizon, missing_bars,
   direction_coverage: brier.length ? hits.length / brier.length : 0,
-  direction_hit_rate: mean(hits), brier: mean(brier), log_loss: mean(losses), target_stop,
+  direction_hit_rate: mean(hits), brier: mean(brier), log_loss: mean(losses), calibration: calibration(pairs), target_stop,
   target_before_stop_rate: valid ? (target_stop.target || 0) / valid : null,
   account: {days: equity_curve.length, total_return: equity - 1, max_drawdown,
    annualized_sharpe: variance ? avg / Math.sqrt(variance) * Math.sqrt(252) : null,
    exposure: mean(equity_curve.map(r => r.exposure)), equity_curve}
  };
+}
+
+// Per-decision outcome fields for exports, with the same +6 and barrier rules as score().
+// bb: that symbol/session's bars sorted by bar number.
+export function intradayOutcome(p, bb) {
+ const byNumber = new Map(bb.map(b => [b.bar, b]));
+ const current = byNumber.get(p.bar);
+ if (!current || p.condition === 'missed') return {outcome_status: current ? 'missed' : 'missing_bar'};
+ const last = bb.at(-1);
+ const open = !finalBar(last);
+ const later = byNumber.get(p.bar + 6);
+ const d = side(p);
+ const up = later ? +(later.close > current.close) : null;
+ let outcome = barrier(p, [], current.close);
+ if (outcome === 'neither') {
+  const future = Array.from({length: p.horizon}, (_, i) => byNumber.get(p.bar + i + 1));
+  const gap = future.findIndex(b => !b);
+  outcome = barrier(p, gap < 0 ? future : future.slice(0, gap), current.close);
+  if (outcome === 'neither' && gap >= 0) outcome = open && p.bar + gap + 1 > last.bar ? 'pending' : 'unavailable';
+ }
+ return {close_6: later?.close ?? null, up_6: up, direction_hit: up == null || !d ? null : +((d === 1) === !!up),
+  barrier: outcome, outcome_status: later ? 'mature' : open && p.bar + 6 > last.bar ? 'pending' : 'unavailable'};
 }
 
 export function sessionPositions(bars, predictions, conditions, cost_bps) {

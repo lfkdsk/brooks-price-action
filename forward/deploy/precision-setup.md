@@ -25,6 +25,9 @@ The steps below provision a fresh daily installation.
    npx wrangler d1 create brooks_forward
    # Edit database_id in wrangler.toml now.
    npx wrangler d1 execute brooks_forward --remote --file schema.sql
+   npx wrangler d1 execute brooks_forward --remote --file migrations/0002_intraday.sql
+   npx wrangler d1 execute brooks_forward --remote --file migrations/0003_archive.sql
+   npx wrangler d1 execute brooks_forward --remote --file migrations/0004_levels_ok.sql
    ```
 
 3. Generate a high-entropy write token, save it locally, and paste that same value into
@@ -104,7 +107,7 @@ The steps below provision a fresh daily installation.
    timezone; verify CRON_TZ support or set the host timezone to America/Los_Angeles.
    Do not enable both schedulers. The shared flock is an additional overlap guard.
 
-The Worker has no cron trigger. Monitor the dashboard/logs, Cloudflare quotas and billing,
+The Worker has two cron triggers (see [Archive](#archive-1-minute-bars-llm-cost-log-snapshots-and-explore)). Monitor the dashboard/logs, Cloudflare quotas and billing,
 and back up D1 with an operator-run export periodically. Reads, full readings, model names,
 revision IDs and symbols are public; do not include private data in prompts/readings.
 No brokerage credentials or order execution are involved.
@@ -166,3 +169,45 @@ restart. Their scripts use independent nonblocking locks and log in
 `~/.local/state/brooks-forward/recap-YYYY-MM-DD.log`. The existing daily wrapper
 keeps its own lock. To regenerate today's recap after the close, invoke
 `forward/deploy/run-recap.sh --force` from the checkout.
+
+## Archive: 1-minute bars, LLM cost log, snapshots and /explore
+
+Additive and backward compatible. Apply the two migrations from `forward/worker`
+**before** deploying the updated Worker:
+
+```sh
+cd ~/brooks-price-action/forward/worker
+npx wrangler d1 execute brooks_forward --remote --file migrations/0003_archive.sql
+npx wrangler d1 execute brooks_forward --remote --file migrations/0004_levels_ok.sql
+npx wrangler deploy
+```
+
+- `0003_archive.sql` creates `ibars1m`, `metrics_snapshots` and `llm_calls`
+  (`CREATE … IF NOT EXISTS`, safe to rerun).
+- `0004_levels_ok.sql` adds the nullable `levels_ok` column to `predictions` and
+  `ipredictions`. SQLite has no `ADD COLUMN IF NOT EXISTS`: run it **once**; a second run
+  fails with "duplicate column name" and changes nothing. If the Worker is deployed first,
+  writes still succeed (it retries without the column) but the flag is not stored.
+
+`wrangler.toml` now declares cron triggers `45 21 * * 1-5` and `15 22 * * 1-5` (UTC).
+`wrangler deploy` registers them; check under Workers → brooks-forward → Settings →
+Triggers. They run `scheduled()`, which upserts that day's cumulative and rolling-20
+metrics for both scopes into `metrics_snapshots` (idempotent: the second run of the day
+overwrites the first). In winter (PST) 21:45 UTC is only five minutes after the 13:40 PT
+daily run starts, so the 22:15 run is the one that normally sees all forecasts; in summer
+both run after it. To test locally: `npx wrangler dev --test-scheduled` and request
+`/__scheduled?cron=15+22+*+*+1-5`.
+
+The collector needs no new setup: the existing `brooks-intraday-bars` timer now also
+uploads today's closed 1-minute bars (`/api/intraday/bars1m`), and every `claude -p` call
+(daily, intraday, recap) posts one best-effort metadata row to `/api/llm_calls`.
+Check after a trading day:
+
+```sh
+npx wrangler d1 execute brooks_forward --remote --command "SELECT scope, COUNT(*), SUM(cost_usd) FROM llm_calls GROUP BY scope"
+npx wrangler d1 execute brooks_forward --remote --command "SELECT session, COUNT(*) FROM ibars1m GROUP BY session"
+npx wrangler d1 execute brooks_forward --remote --command "SELECT scope, as_of, COUNT(*) FROM metrics_snapshots GROUP BY 1,2"
+```
+
+Then open `/explore`. 1-minute bars add roughly 390 rows per symbol per session; watch D1
+storage over months.

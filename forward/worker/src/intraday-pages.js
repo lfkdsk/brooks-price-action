@@ -312,7 +312,7 @@ async function loadIntraday() {
   if (!p) html += '<p>' + (missed ? '这个时间点程序没有按时运行，没有判断（记为漏掉）。' : '这个时间点没有记录。') + '</p>';
   else {
    const reading = stripPreamble((p.reading || '').replace(/\n*\x60\x60\x60(?:json)?[\s\S]*?\x60\x60\x60\s*$/i, ''));
-   html += '<div>' + pill(p.always_in) + (p.always_in === 'unclear' ? ' <span class="sub">不持仓</span>' : '') + '</div>' +
+   html += '<div>' + pill(p.always_in) + levelsTag(p) + (p.always_in === 'unclear' ? ' <span class="sub">不持仓</span>' : '') + '</div>' +
     '<dl class="kv"><div><dt>30 分钟后更高的概率</dt><dd>' + (g.control ? '—（规则组不估概率）' : Math.round(p.p_up_6 * 100) + '%') + '</dd></div>' +
     '<div><dt>判断时价格</dt><dd>' + num(p.close) + '</dd></div>' +
     '<div><dt>目标</dt><dd class="pos">' + num(p.target) + '</dd></div><div><dt>止损</dt><dd class="neg">' + num(p.stop) + '</dd></div></dl>' +

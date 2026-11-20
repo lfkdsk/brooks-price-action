@@ -146,7 +146,7 @@ strings and compares every digest byte without token-content early exits. GETs a
 
 Dashboard includes exposure, pending forecasts, full readings, paired/calibration JSON,
 light/dark system preference and mobile tables. Without the chart CDN the tables and
-readings still work. No Worker cron is needed. Public statistics currently scan the
+readings still work. The only Worker cron writes metrics snapshots (see below). Public statistics currently scan the
 stored history: monitor D1 row-read/Worker CPU quotas as months accumulate; cache or
 materialize aggregates if necessary. No automated retention or backups are configured.
 
@@ -255,3 +255,48 @@ insert-only at their session key unless explicitly forced. Follow the
 [Precision setup](deploy/precision-setup.md#add-intraday-to-an-existing-production-installation)
 for the additive D1 migration and independent timers. Stats read intraday history
 for the requested symbol (or all symbols when omitted).
+
+## Archive and analysis page
+
+Migrations `worker/migrations/0003_archive.sql` and `0004_levels_ok.sql` (see
+[Precision setup](deploy/precision-setup.md#archive-1-minute-bars-llm-cost-log-snapshots-and-explore)) add:
+
+- **`ibars1m`** — regular-session 1-minute bars (`minute` 1 = 09:30 ET … 390). `intraday.py
+  --bars-only` fetches Yahoo `interval=1m&range=1d`, keeps only today's closed bars
+  (09:30–16:00 ET, 20-second buffer, early-close end respected) and upserts the whole
+  session so far each minute. A 1-minute failure is logged and makes the run exit
+  nonzero but never blocks the 5-minute upload.
+- **`llm_calls`** — one row per `claude -p --output-format json` call (daily, intraday,
+  recap, including parse retries): scope, symbol, session/asof, condition, model, duration,
+  input tokens (uncached + cache writes), output tokens, cache-read tokens, `total_cost_usd`,
+  ok and an error type (`invalid_output`, `timeout`, `exit_N`, `cli_error`). Only metadata
+  is posted — never prompts, outputs or secrets — and logging failures are printed and ignored.
+- **`metrics_snapshots`** — written by the Worker's cron `scheduled()` handler
+  (`45 21` and `15 22` UTC, Mon–Fri): for each scope, condition and (daily) symbol,
+  the cumulative metrics and the rolling last-20-trading-day metrics as known that day,
+  keyed by the latest data date. Equity curves are omitted from snapshots.
+- **`levels_ok`** on `predictions` / `ipredictions` — 1 when a long's target is above and
+  stop below the entry close (short reversed), 0 when inverted, NULL when not applicable.
+  Inverted forecasts are kept and logged by the collector; the Worker derives the flag if
+  the collector does not send it. Pages show 「目标/止损方向异常」 (older rows are checked
+  from their stored levels).
+
+`/explore` (nav 「分析」) filters by 范围 (日线/日内), date range, symbol and groups and shows
+the 谁更准 table with advanced metrics, percent equity curves, rolling-20 direction accuracy
+and return (from snapshots where present, otherwise computed with data up to each day),
+a probability calibration chart with the diagonal, per-group LLM cost/latency and a CSV
+download. All numbers come from `metrics.js` / `intraday-metrics.js`. Daily account
+returns stop at the first close after the `to` date; forecast outcomes use all later bars.
+
+| Route | Body / result |
+|---|---|
+| POST /api/intraday/bars1m | `{bars:[{symbol,ts,session,minute,open,high,low,close,volume}]}` (max 2000, upsert) |
+| POST /api/llm_calls | One row or `{calls:[…]}` (max 200): `ts,scope,symbol,session_or_asof,condition,model,duration_ms,input_tokens,output_tokens,cache_read_tokens,cost_usd,ok,error_type` |
+| GET /api/snapshots?scope=&condition=&symbol=&from=&to= | `{snapshots:[{scope,as_of,condition,symbol,metrics,rolling20,created_at}]}`; `symbol=all` means the `*` rows |
+| GET /api/explore?scope=&from=&to=&symbol=&conditions= | Filtered metrics, paired, rolling, calibration, `llm` summary and filter options |
+| GET /api/export.csv?scope=&from=&to=&symbol=&conditions= | Attachment, one row per prediction (no reading text) with outcome fields: daily `next_return, close_5, up_5, direction_hit, barrier`; intraday `close_6, up_6, direction_hit, barrier`. RFC 4180 quoting; text cells starting with `= + - @` are prefixed with `'` |
+| GET /explore | Analysis page |
+
+`conditions` is a comma-separated list; omit it for all groups. Writes use the existing
+Bearer token. Node tests that hit SQL run the Worker's statements against real SQLite through
+`python3` (`worker/test/sqlite-d1.js`) and are skipped when python3 is missing.

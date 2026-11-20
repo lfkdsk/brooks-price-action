@@ -36,10 +36,16 @@ class FakeAPI:
         self.predictions = {}
         self.recaps = {}
         self.bar_uploads = 0
+        self.minute_bars = []
+        self.llm_calls = []
 
     def request(self, method, path, body=None):
         if path == '/api/intraday/bars':
             self.bar_uploads += 1
+        elif path == '/api/intraday/bars1m':
+            self.minute_bars.extend(body['bars'])
+        elif path == '/api/llm_calls':
+            self.llm_calls.append(body)
         elif method == 'GET' and path.startswith('/api/intraday/predictions?'):
             return {'predictions': list(self.predictions.values())}
         elif path == '/api/intraday/predictions':
@@ -184,8 +190,9 @@ class IntradayTests(unittest.TestCase):
         bars = session_bars('SPY', yahoo_result(session_starts(start, 10)), now)
         api = FakeAPI()
         fetch = Mock(return_value=bars)
+        fetch_1m = Mock(return_value=[])
         with patch('intraday.subprocess.run') as run, patch('intraday.llm') as model:
-            self.assertEqual(bars_only({}, ['SPY', 'QQQ'], now, api, fetch), 0)
+            self.assertEqual(bars_only({}, ['SPY', 'QQQ'], now, api, fetch, fetch_1m), 0)
             run.assert_not_called()
             model.assert_not_called()
         self.assertEqual(api.bar_uploads, 2)
@@ -202,7 +209,8 @@ class IntradayTests(unittest.TestCase):
         fetch.assert_not_called()
         # A holiday (no bars for today) uploads nothing.
         api = FakeAPI()
-        self.assertEqual(bars_only({}, ['SPY'], when(2026, 7, 9, 10, 0).astimezone(UTC), api, Mock(return_value=[])), 0)
+        self.assertEqual(bars_only({}, ['SPY'], when(2026, 7, 9, 10, 0).astimezone(UTC), api, Mock(return_value=[]),
+                                   Mock(return_value=[])), 0)
         self.assertEqual(api.bar_uploads, 0)
 
     def test_main_dispatches_bars_only_flag(self):

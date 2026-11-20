@@ -2,6 +2,7 @@
 import datetime as dt
 import urllib.parse
 
+import llm_log
 from intraday import (ET, UTC, api_and_sha, fetch_intraday, final_json, finite, prices,
                       run_model, settings, yahoo)
 
@@ -110,8 +111,9 @@ daily-chart context, what to watch tomorrow, and an educational/non-advice discl
 Finish with a fenced json block of day_type (string), annotations (up to 12 objects containing
 bar (today's bar number), label (short string), and pos (above or below)), and levels (objects
 containing price (number) and label (string)). Avoid overlapping annotation labels where possible."""
+    log = llm_log.recorder(api, scope='recap', symbol=symbol, session_or_asof=session, condition='recap')
     result, _, actual_model = model(config, bars, skill, prompt, lambda reading: parse_recap(reading, numbers),
-                                    context=prior)
+                                    context=prior, log=log)
     api.request('POST', '/api/recaps', dict(result, symbol=symbol, session=session, model=actual_model,
                                           skill_sha=sha, prior=prior, force=force))
     print(f'{symbol} {session}: recap saved')

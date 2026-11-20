@@ -15,6 +15,7 @@ import urllib.parse
 import urllib.request
 from zoneinfo import ZoneInfo
 
+import llm_log
 from run_daily import API, HERE, read_token, stage_inputs, unwrap_output
 
 ET = ZoneInfo('America/New_York')
@@ -112,6 +113,40 @@ def fetch_intraday(symbol, now):
     return session_bars(symbol, yahoo(symbol, 'range=5d&interval=5m'), now)
 
 
+def session_bars_1m(symbol, result, now):
+    """Today's closed regular-session 1-minute bars (minute 1 = 09:30 ET), same rules as 5-minute bars."""
+    today = now.astimezone(ET).date()
+    stamps = result.get('timestamp') or []
+    if not stamps:
+        return []
+    quote = result['indicators']['quote'][0]
+    meta = result.get('meta', {})
+    end = (meta.get('currentTradingPeriod') or {}).get('regular', {}).get('end')
+    end = dt.datetime.fromtimestamp(end, ET) if end else None
+    rows = {}
+    for i, stamp in enumerate(stamps):
+        start = dt.datetime.fromtimestamp(stamp, UTC)
+        local = start.astimezone(ET)
+        minute = local.hour * 60 + local.minute
+        if (local.date() != today or local.weekday() >= 5 or not OPEN_MINUTE <= minute < CLOSE_MINUTE
+                or local.second or start + dt.timedelta(minutes=1, seconds=CLOSE_BUFFER) > now
+                or (end and end.date() == today and local >= end)):
+            continue
+        values = prices(quote, i)
+        if values is None:
+            continue
+        volume = quote.get('volume')
+        volume = volume[i] if volume else None
+        rows[stamp] = dict(symbol=symbol, ts=start.isoformat().replace('+00:00', 'Z'),
+                           session=today.isoformat(), minute=minute - OPEN_MINUTE + 1, **values,
+                           volume=volume if finite(volume) and volume >= 0 else None)
+    return [b for _, b in sorted(rows.items())]
+
+
+def fetch_intraday_1m(symbol, now):
+    return session_bars_1m(symbol, yahoo(symbol, 'range=1d&interval=1m'), now)
+
+
 def decisions(bars, existing, now):
     """Return missed points and the sole eligible point, using session bar slots."""
     if not bars:
@@ -160,7 +195,7 @@ def parse_prediction(reading):
                 horizon=h if type(h) is int and 1 <= h <= 12 else 6, day_type=day_type.strip())
 
 
-def run_model(config, bars, skill, instruction, parse, model=None, context=None, *, chart=False, timeout=600):
+def run_model(config, bars, skill, instruction, parse, model=None, context=None, *, chart=False, timeout=600, log=None):
     if config.get('llm_cli', 'claude') != 'claude':
         raise ValueError('Only Claude CLI is supported')
     with tempfile.TemporaryDirectory(prefix='brooks-intraday-') as name:
@@ -203,20 +238,22 @@ def run_model(config, bars, skill, instruction, parse, model=None, context=None,
                        '--allowedTools', ','.join(allowed), '--add-dir', str(stage)]
             if model:
                 command += ['--model', model]
-            proc = subprocess.run(command, cwd=stage, stdin=subprocess.DEVNULL,
-                                  capture_output=True, text=True, timeout=timeout,
-                                  env={k: v for k, v in os.environ.items() if k != 'WRITE_TOKEN'})
-            if proc.returncode:
-                raise RuntimeError(f'Claude exited {proc.returncode}')
-            reading, actual_model = unwrap_output(proc.stdout)
+            _, reading, actual_model, finish = llm_log.run_cli(
+                subprocess.run, command, log, unwrap_output, cwd=stage, stdin=subprocess.DEVNULL,
+                capture_output=True, text=True, timeout=timeout,
+                env={k: v for k, v in os.environ.items() if k != 'WRITE_TOKEN'})
             try:
-                return parse(reading), reading, actual_model
+                parsed = parse(reading)
             except ValueError:
+                finish(False, 'invalid_output')
                 if attempt:
                     raise
+                continue
+            finish(True)
+            return parsed, reading, actual_model
 
 
-def llm(config, condition, bars, skill):
+def llm(config, condition, bars, skill, log=None):
     b = bars[-1]
     style = 'Use Brooks intraday price action.' if condition != 'baseline' else 'Use your own intraday price-action analysis.'
     prompt = f"""Read {b['symbol']} on 5-minute regular-session bars for {b['session']} through bar {b['bar']}.
@@ -230,7 +267,7 @@ target and stop (number or null), horizon_bars (integer 1–12), and day_type (s
                   "relative to EMA20 and prior levels. Then read skill/SKILL.md and take exact "
                   "prices from bars.csv.\n" + prompt)
     return run_model(config, bars, skill if condition != 'baseline' else None, prompt,
-                     parse_prediction, config.get('intraday_model', 'sonnet'), chart=chart, timeout=360)
+                     parse_prediction, config.get('intraday_model', 'sonnet'), chart=chart, timeout=360, log=log)
 
 
 def mechanical(condition, bars):
@@ -260,6 +297,11 @@ def collect_symbol(config, api, sha, skill, symbol, bars, now, predict=llm):
 
     def save(n, condition, result, reading, model):
         b = by_bar.get(n)
+        # Inverted target/stop: keep the forecast, flag it (levels_ok=0) and log it.
+        result = dict(result, levels_ok=llm_log.levels_ok(result.get('always_in'), result.get('target'),
+                                                           result.get('stop'), b['close'] if b else None))
+        if result['levels_ok'] == 0:
+            print(f'{symbol} {session} bar {n} {condition}: levels_ok=false (target/stop on the wrong side of close)')
         start = dt.datetime.combine(dt.date.fromisoformat(session), dt.time(9, 30), ET)
         ts = (start + dt.timedelta(minutes=(n - 1) * BAR_MINUTES)).astimezone(UTC)
         api.request('POST', '/api/intraday/predictions',
@@ -281,7 +323,8 @@ def collect_symbol(config, api, sha, skill, symbol, bars, now, predict=llm):
             return 0
         try:
             if condition in LLM_CONDITIONS:
-                result, reading, model = predict(config, condition, recent, skill)
+                log = llm_log.recorder(api, scope='intraday', symbol=symbol, session_or_asof=session, condition=condition)
+                result, reading, model = predict(config, condition, recent, skill, log=log)
             else:
                 result, reading, model = mechanical(condition, recent), '', 'mechanical-v1'
             save(current, condition, result, reading, model)
@@ -313,7 +356,7 @@ def settings(description, force=False, bars_only=False, argv=None):
         parser.add_argument('--session', help='YYYY-MM-DD (America/New_York) to recap; default = today in New York')
     if bars_only:
         parser.add_argument('--bars-only', action='store_true',
-                            help='upload the latest 5-minute bars only (no model calls, no predictions)')
+                            help='upload the latest 5-minute and 1-minute bars only (no model calls, no predictions)')
     args = parser.parse_args(argv)
     config = json.loads(args.config.read_text())
     skill = (args.config.resolve().parent / config.get('skill_dir', '../../skill/brooks-price-action')).resolve()
@@ -343,17 +386,26 @@ def upload_bars(api, symbol, now, fetch=None):
     return 0
 
 
-def bars_only(config, symbols, now, api=None, fetch=None):
+def upload_bars_1m(api, symbol, now, fetch_1m=None):
+    """Archive today's closed 1-minute bars (idempotent upsert; the whole session so far each run)."""
+    bars = (fetch_1m or fetch_intraday_1m)(symbol, now)
+    for i in range(0, len(bars), 1000):
+        api.request('POST', '/api/intraday/bars1m', {'bars': bars[i:i + 1000]})
+    return 0
+
+
+def bars_only(config, symbols, now, api=None, fetch=None, fetch_1m=None):
     if not in_session_window(now):
         return 0
     api = api or API(config['api_base'], read_token())
     errors = 0
     for symbol in symbols:
-        try:
-            errors += upload_bars(api, symbol, now, fetch)
-        except Exception as exc:
-            print(f'{symbol} bars: {type(exc).__name__}: {str(exc)[:120]}')
-            errors += 1
+        for kind, upload, source in (('bars', upload_bars, fetch), ('1m bars', upload_bars_1m, fetch_1m)):
+            try:
+                errors += upload(api, symbol, now, source)
+            except Exception as exc:
+                print(f'{symbol} {kind}: {type(exc).__name__}: {str(exc)[:120]}')
+                errors += 1
     return int(bool(errors))
 
 

@@ -1,4 +1,4 @@
-import {escapeHtml, isNum, num, pageShell, pill, renderMarkdown, scriptPrelude, stripPreamble} from './ui-common.js';
+import {escapeHtml, isNum, levelsTag, num, pageShell, pill, renderMarkdown, scriptPrelude, stripPreamble} from './ui-common.js';
 
 // Daily paper account: names and hints shared by the page script and the reading page.
 const GROUP_NAMES = {skill: 'Claude + Brooks', baseline: 'Claude（不用 Brooks）', ema20: '均线规则（EMA20）',
@@ -297,7 +297,7 @@ async function loadDaily({GROUP_NAMES, SYMBOL_HINTS}) {
    if (upText(p)) nums.push('<span>5日上涨概率 <b>' + Math.round(p.p_up_5 * 100) + '%</b></span>');
    if (isNum(p.target)) nums.push('<span>目标 <b class="pos">' + num(p.target) + '</b></span>');
    if (isNum(p.stop)) nums.push('<span>止损 <b class="neg">' + num(p.stop) + '</b></span>');
-   html += '<div class="ritem"><div class="rtop"><span class="gname"><i class="dot" style="background:' + g.color + '"></i>' + escapeHtml(g.name) + '</span>' + pill(p.always_in) + '</div>' +
+   html += '<div class="ritem"><div class="rtop"><span class="gname"><i class="dot" style="background:' + g.color + '"></i>' + escapeHtml(g.name) + '</span>' + pill(p.always_in) + levelsTag(p) + '</div>' +
     (nums.length ? '<div class="rnums">' + nums.join('') + '</div>' : '') +
     (reading ? '<div class="reading' + (open ? ' full' : '') + '">' + renderMarkdown(reading) + '</div><div class="ractions"><button class="link" data-more="' + p.id + '">' +
      (open ? '收起' : '展开全文') + '</button><a href="/reading/' + encodeURIComponent(p.id) + '">单独打开</a></div>' :
@@ -352,7 +352,7 @@ export function readingPage(p) {
  return pageShell({title: p.symbol + ' ' + p.asof + ' · ' + name, current: 'daily', body: `<section class="card">
  <h1>${escapeHtml(p.symbol + hint)} · ${escapeHtml(p.asof)} 收盘后的判断</h1>
  <h2 style="margin:8px 0 4px">${escapeHtml(name)}</h2>
- <div>${pill(p.always_in)}</div>
+ <div>${pill(p.always_in)}${levelsTag(p)}</div>
  <dl class="kv"><div><dt>5日上涨概率</dt><dd>${isNum(p.p_up_5) ? Math.round(p.p_up_5 * 100) + '%' : '—'}</dd></div><div><dt>判断时收盘价</dt><dd>${num(p.close)}</dd></div>
  <div><dt>目标</dt><dd class="pos">${num(p.target)}</dd></div><div><dt>止损</dt><dd class="neg">${num(p.stop)}</dd></div></dl>
  <p class="sub">模型：${escapeHtml(p.model)} · 方法版本：${escapeHtml(String(p.skill_sha ?? '').slice(0, 7))} · <a href="/">← 返回每日模拟仓</a></p>

@@ -18,6 +18,7 @@ import time
 import urllib.parse
 import urllib.request
 
+import llm_log
 from fetch import fetch_bars
 from prompts import prompt
 
@@ -78,7 +79,7 @@ def stage_inputs(stage, bars, skill=None):
             shutil.copyfile(source, target)
 
 
-def llm_prediction(config, condition, symbol, bars, skill):
+def llm_prediction(config, condition, symbol, bars, skill, log=None):
     if config['llm_cli'] != 'claude':
         raise ValueError('Only the Claude CLI JSON protocol is supported')
     with tempfile.TemporaryDirectory(prefix='brooks-forward-') as name:
@@ -93,16 +94,18 @@ def llm_prediction(config, condition, symbol, bars, skill):
                 command += ['--add-dir', str(stage / 'skill')]
             # The collector token must not be inherited by the CLI or its subprocesses.
             env = {k: v for k, v in os.environ.items() if k != 'WRITE_TOKEN'}
-            proc = subprocess.run(command, cwd=stage, stdin=subprocess.DEVNULL,
-                                  capture_output=True, text=True, timeout=900, env=env)
-            if proc.returncode:
-                raise RuntimeError('CLI execution failed (exit %s)' % proc.returncode)
-            reading, model = unwrap_output(proc.stdout)
+            _, reading, model, finish = llm_log.run_cli(
+                subprocess.run, command, log, unwrap_output, cwd=stage, stdin=subprocess.DEVNULL,
+                capture_output=True, text=True, timeout=900, env=env)
             try:
-                return parse_prediction(reading), reading, model
+                parsed = parse_prediction(reading)
             except ValueError:
+                finish(False, 'invalid_output')
                 if attempt:
                     raise
+                continue
+            finish(True)
+            return parsed, reading, model
 
 
 def mechanical(condition, bars):
@@ -134,15 +137,16 @@ class API:
         headers = {'Content-Type': 'application/json', 'User-Agent': 'brooks-forward-runner/1.0'}
         if method == 'POST':
             headers['Authorization'] = 'Bearer ' + self.token
-        # Retrying POST is safe for bars/predictions; runs are append-only, so one attempt.
-        for attempt in range(1 if path == '/api/runs' else 3):
+        # Retrying POST is safe for bars/predictions; runs and LLM call logs are append-only, so one attempt.
+        once = path in ('/api/runs', '/api/llm_calls')
+        for attempt in range(1 if once else 3):
             try:
                 req = urllib.request.Request(self.base + path, data=data, headers=headers, method=method)
                 with urllib.request.urlopen(req, timeout=90) as response:
                     return json.load(response)
             except OSError as e:
                 status = getattr(e, 'code', None)
-                if attempt == (0 if path == '/api/runs' else 2):
+                if attempt == (0 if once else 2):
                     raise RuntimeError(f'Collector request failed: {method} {path.split("?")[0]} (HTTP {status})') from None
                 time.sleep(2 ** attempt)
 
@@ -179,15 +183,19 @@ def collect(config, api, skill_sha, skill, workers=2, fetcher=fetch_bars, llm=ll
         symbol, asof, condition, bars = args
         try:
             if condition in ('skill', 'baseline'):
-                p, reading, model = llm(config, condition, symbol, bars, skill)
+                log = llm_log.recorder(api, scope='daily', symbol=symbol, session_or_asof=asof, condition=condition)
+                p, reading, model = llm(config, condition, symbol, bars, skill, log=log)
             else:
                 p, reading, model = mechanical(condition, bars), '', 'mechanical-v1'
             p = {k: p[k] for k in ('always_in', 'p_up_5', 'target', 'stop', 'state', 'horizon_bars')}
             p['horizon'] = p.pop('horizon_bars')
             p.update(symbol=symbol, asof=asof, condition=condition, close=bars[-1]['close'],
                      reading=reading, model=model, skill_sha=skill_sha)
+            # Inverted levels are kept (the forecast stands) but flagged for the pages and metrics.
+            p['levels_ok'] = llm_log.levels_ok(p['always_in'], p['target'], p['stop'], p['close'])
             api.request('POST', '/api/predictions', p)
-            return True, f'{symbol} {asof} {condition}: saved ({model})'
+            flag = ' levels_ok=false (target/stop on the wrong side of close)' if p['levels_ok'] == 0 else ''
+            return True, f'{symbol} {asof} {condition}: saved ({model}){flag}'
         except Exception as e:
             # Do not log raw CLI output, environment values, or exception messages.
             return False, f'{symbol} {asof} {condition}: failed ({type(e).__name__})'

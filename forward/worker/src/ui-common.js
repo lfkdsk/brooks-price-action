@@ -1,4 +1,4 @@
-// Shared look and helpers for the three public pages (/, /intraday, /recap).
+// Shared look and helpers for the public pages (/, /intraday, /recap, /explore).
 // Functions below that run in the browser are serialized with .toString(); keep them
 // self-contained (they may only call each other and escapeHtml / renderMarkdown).
 
@@ -65,6 +65,16 @@ function num(v, d = 2) { return !isNum(v) ? '—' : v.toFixed(d); }
 function tone(v) { return !isNum(v) || Math.abs(v) < 5e-6 ? '' : v > 0 ? 'pos' : 'neg'; }
 function sideOf(v) { return v === 'long' ? ['做多', 'long', '多'] : v === 'short' ? ['做空', 'short', '空'] : ['观望', 'flat', '观望']; }
 function pill(v, short) { const s = sideOf(v); return '<span class="pill ' + s[1] + '">' + (short ? s[2] : s[0]) + '</span>'; }
+// Target/stop on the wrong side of the entry close (levels_ok = 0; older rows are checked from their levels).
+function levelsBad(p, close) {
+ if (!p) return false;
+ if (p.levels_ok === 0 || p.levels_ok === false) return true;
+ if (p.levels_ok === 1 || p.levels_ok === true) return false;
+ const d = p.always_in === 'long' ? 1 : p.always_in === 'short' ? -1 : 0, c = isNum(close) ? close : p.close;
+ if (!d || !isNum(c)) return false;
+ return (isNum(p.target) && d * (p.target - c) <= 0) || (isNum(p.stop) && d * (p.stop - c) >= 0);
+}
+function levelsTag(p, close) { return levelsBad(p, close) ? '<span class="chip warn lv-bad" title="做多时目标应高于、止损应低于判断时价格；做空相反">目标/止损方向异常</span>' : ''; }
 function drawdown(v) { return isNum(v) && v > 0 ? '−' + (v * 100).toFixed(2) + '%' : '0.00%'; }
 
 // Cumulative-return lines in percent; the selected series is drawn last and labelled.
@@ -112,8 +122,8 @@ function drawEquity(parent, series, selected) {
   '" role="img" aria-label="各组累计收益（百分比）">' + out.join('') + '</svg>';
 }
 
-export const clientHelpers = {isNum, pct, ratio, num, tone, sideOf, pill, drawdown, drawEquity};
-export {isNum, pct, ratio, num, tone, sideOf, pill, drawdown, drawEquity};
+export const clientHelpers = {isNum, pct, ratio, num, tone, sideOf, pill, levelsBad, levelsTag, drawdown, drawEquity};
+export {isNum, pct, ratio, num, tone, sideOf, pill, levelsBad, levelsTag, drawdown, drawEquity};
 
 // Opening of every inline page script: the __name shim MUST stay the first statement
 // (wrangler/esbuild keep_names wraps serialized functions in __name()).
@@ -162,7 +172,7 @@ h3{font-size:14px;margin:14px 0 6px}
 .pos{color:var(--long)}.neg{color:var(--short)}
 .chip{font-size:12px;padding:3px 10px;border-radius:999px;background:var(--flat-soft);color:var(--muted);white-space:nowrap}
 .chip.live{background:var(--long-soft);color:var(--long)}.chip.live::before{content:"";display:inline-block;width:7px;height:7px;border-radius:50%;background:currentColor;margin-right:6px;vertical-align:1px}
-.chip.warn{background:var(--warn-soft);color:var(--warn)}
+.chip.warn{background:var(--warn-soft);color:var(--warn)}.lv-bad{display:inline-block;margin-left:6px;font-size:11.5px;padding:1px 8px;vertical-align:1px}
 .pill{display:inline-block;min-width:3.2em;text-align:center;padding:2px 9px;border-radius:999px;font-size:13px;font-weight:600;color:var(--pill-ink);white-space:nowrap}
 .pill.long{background:var(--long)}.pill.short{background:var(--short)}.pill.flat{background:var(--flat)}
 .pill.soft{color:var(--ink);background:var(--flat-soft);font-weight:500;min-width:0;white-space:normal;text-align:left}
@@ -229,7 +239,7 @@ svg.eq .zero{stroke:var(--faint)}svg.eq .ln{fill:none;stroke-linejoin:round;stro
 `;
 
 export function topNav(current) {
- const links = [['/', '每日', 'daily'], ['/intraday', '日内', 'intraday'], ['/recap', '复盘', 'recap']];
+ const links = [['/', '每日', 'daily'], ['/intraday', '日内', 'intraday'], ['/recap', '复盘', 'recap'], ['/explore', '分析', 'explore']];
  return '<header class="top"><nav aria-label="页面">' + links.map(([href, text, key]) =>
   '<a href="' + href + '"' + (key === current ? ' aria-current="page"' : '') + '>' + text + '</a>').join('') + '</nav></header>';
 }

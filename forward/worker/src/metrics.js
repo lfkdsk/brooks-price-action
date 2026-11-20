@@ -1,6 +1,33 @@
 // All calculations depend only on persisted bars and submitted signals.
 const mean = a => a.length ? a.reduce((x,y)=>x+y,0)/a.length : null;
 const side = p => ({long:1,short:-1,unclear:0}[p?.always_in] ?? 0);
+// Ten probability buckets [0,.1), …, [.9,1] of [probability, outcome] pairs (shared with intraday).
+export function calibration(pairs) {
+ const buckets=Array.from({length:10},()=>[]);
+ for(const [q,y] of pairs) buckets[Math.min(9,Math.max(0,Math.floor(q*10)))].push([q,y]);
+ return buckets.map((a,i)=>({bucket:i,n:a.length,mean_probability:mean(a.map(x=>x[0])),observed_up:mean(a.map(x=>x[1]))}));
+}
+// Target/stop direction check against the entry close: 1 consistent, 0 inverted, null when no
+// directional side or no level is given. Long: target > close, stop < close; short reversed.
+export function levelsOk(p, close) {
+ const d=side(p);
+ if(!d || typeof close!=='number' || !Number.isFinite(close)) return null;
+ const checks=[];
+ if(typeof p.target==='number' && Number.isFinite(p.target)) checks.push(d*(p.target-close)>0);
+ if(typeof p.stop==='number' && Number.isFinite(p.stop)) checks.push(d*(p.stop-close)<0);
+ return checks.length ? +checks.every(Boolean) : null;
+}
+// Per-prediction outcome fields for exports, using the same alignment as score().
+export function dailyOutcome(p, bb) {
+ const i=bb.findIndex(b=>b.date===p.asof);
+ if(i<0) return {outcome_status:'missing_bar'};
+ const future=bb.slice(i+1), h=p.horizon??5, d=side(p), next=future[0], fifth=future[4];
+ const up=fifth?+(fifth.close>bb[i].close):null;
+ return {next_date:next?.date??null, next_return:next?d*(next.close/bb[i].close-1):null,
+  close_5:fifth?.close??null, up_5:up, direction_hit:up==null||!d||future.length<Math.max(5,h)?null:+((d===1)===!!up),
+  barrier:future.length<h?'pending':barrier(p,future,bb[i].close),
+  outcome_status:future.length<Math.max(5,h)?'pending':'mature'};
+}
 export function barrier(p, future, entry) {
  const d=side(p), t=p.target, s=p.stop;
  if (!d || t==null || s==null) return 'not_applicable';
@@ -24,7 +51,7 @@ function account(rows) {
 }
 function score(bars,preds,cost) {
  const bySymbol=new Map(); for(const b of bars) {const a=bySymbol.get(b.symbol)||[]; a.push(b); bySymbol.set(b.symbol,a);}
- const rows=[], hits=[],bs=[],ll=[],buckets=Array.from({length:10},()=>[]), outcomes={};
+ const rows=[], hits=[],bs=[],ll=[],pairs=[], outcomes={};
  let pending5=0,pendingHorizon=0,missing=0,mature=0;
  for(const [symbol,bb] of bySymbol) {
   bb.sort((a,b)=>a.date.localeCompare(b.date)); const pp=preds.filter(p=>p.symbol===symbol), map=new Map(pp.map(p=>[p.asof,p]));
@@ -49,10 +76,10 @@ function score(bars,preds,cost) {
   // Direction/probability event always means five bars; require declared horizon too.
   if(future.length<Math.max(5,h)) {pending5++; continue;}
   mature++; const y=+(future[4].close>bb[i].close), d=side(p), q=Math.max(1e-6,Math.min(1-1e-6,p.p_up_5));
-  if(d) hits.push(+((d===1)===!!y)); bs.push((p.p_up_5-y)**2); ll.push(-y*Math.log(q)-(1-y)*Math.log(1-q)); buckets[Math.min(9,Math.floor(p.p_up_5*10))].push([p.p_up_5,y]);
+  if(d) hits.push(+((d===1)===!!y)); bs.push((p.p_up_5-y)**2); ll.push(-y*Math.log(q)-(1-y)*Math.log(1-q)); pairs.push([p.p_up_5,y]);
  }
  const valid=['target','stop','neither'].reduce((a,k)=>a+(outcomes[k]||0),0);
- return {predictions:preds.length,mature,pending_5:pending5,pending_horizon:pendingHorizon,missing_bars:missing,direction_coverage:mature?hits.length/mature:0,direction_hit_rate:mean(hits),brier:mean(bs),log_loss:mean(ll),calibration:buckets.map((a,i)=>({bucket:i,n:a.length,mean_probability:mean(a.map(x=>x[0])),observed_up:mean(a.map(x=>x[1]))})),target_stop:outcomes,target_before_stop_rate:valid?(outcomes.target||0)/valid:null,account:account(rows)};
+ return {predictions:preds.length,mature,pending_5:pending5,pending_horizon:pendingHorizon,missing_bars:missing,direction_coverage:mature?hits.length/mature:0,direction_hit_rate:mean(hits),brier:mean(bs),log_loss:mean(ll),calibration:calibration(pairs),target_stop:outcomes,target_before_stop_rate:valid?(outcomes.target||0)/valid:null,account:account(rows)};
 }
 export function computeMetrics(bars,predictions,{cost_bps=2}={}) {
  const conditions={},per_symbol={},paired={};
