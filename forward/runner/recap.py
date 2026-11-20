@@ -23,6 +23,10 @@ def label(value, size=200):
 
 def parse_recap(reading, bars):
     markdown, payload = final_json(reading)
+    # Drop any conversational preamble ("I have everything I need…", a leading '---') before the recap body.
+    lines = (markdown or '').splitlines()
+    start = next((i for i, l in enumerate(lines) if l.lstrip().startswith(('#', '**'))), 0)
+    markdown = '\n'.join(lines[start:]).strip()
     annotations, levels = payload.get('annotations'), payload.get('levels')
     if (not markdown or len(markdown) > 12000 or not label(payload.get('day_type'))
             or not isinstance(annotations, list) or len(annotations) > 12
