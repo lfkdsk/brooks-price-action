@@ -479,9 +479,9 @@ export function dayTone(dayType) {
 }
 
 // Newer recaps open with a "**整体判断**" section; pull it out for its own card.
-export function splitOverall(markdown) {
+export function splitOverall(markdown, title = '整体判断') {
  const lines = String(markdown ?? '').split(/\r?\n/);
- const start = lines.findIndex(line => line.trim() === '**整体判断**');
+ const start = lines.findIndex(line => line.trim() === '**' + title + '**');
  if (start < 0) return {overall: '', rest: String(markdown ?? '')};
  let end = start + 1;
  while (end < lines.length && !/^\s*(#{1,6}\s|\*\*[^*]+\*\*[:：]?\s*$|(-{3,}|\*{3,}|_{3,})\s*$)/.test(lines[end])) end++;
@@ -514,7 +514,8 @@ export function recapPage(symbol, history, recap, bars) {
   const chart = liveChart(bars, {session: day, prior, annotations: recap.annotations || [], levels: recap.levels || [],
    viewWidth: 918, height: 440, minStep: 10});
   const levels = [...(recap.levels || [])].sort((a, b) => b.price - a.price);
-  const {overall, rest} = splitOverall(stripPreamble(recap.markdown));
+  const {overall, rest: afterOverall} = splitOverall(stripPreamble(recap.markdown));
+  const {overall: vooSignals, rest} = splitOverall(afterOverall, 'VOO 分批信号');
   content = `<section class="card" aria-labelledby="rc-title">
  <div class="rc-head"><h1 id="rc-title">${escapeHtml(symbol)} · 5分钟日内复盘</h1><span class="chip">收盘后生成</span></div>
  <div class="rc-date">${escapeHtml(day)}<small>${weekday(day)}</small></div>
@@ -525,6 +526,8 @@ export function recapPage(symbol, history, recap, bars) {
 </section>
 ${overall ? `<section class="card overall" aria-labelledby="overall-title"><h2 id="overall-title">整体判断</h2>
  <div class="md">${renderMarkdown(overall)}</div></section>` : ''}
+${vooSignals ? `<section class="card overall" aria-labelledby="voo-title"><h2 id="voo-title">VOO 分批信号</h2>
+ <div class="md">${renderMarkdown(vooSignals)}</div><p class="sub">按固定规则计算的 Brooks 信号近似，仅供学习参考，不构成投资建议。</p></section>` : ''}
 <section class="card" aria-labelledby="chart-title"><h2 id="chart-title">走势图</h2>
  <div class="chart-scroll">${chart}</div>
  <p class="legend"><span class="k"><b class="an">●</b> 红字：复盘标注</span><span class="k"><b class="lv">┄</b> 紫色虚线：关键价位（右侧紫字为价格，名称见下方）</span><span class="k">灰虚线：昨收/昨低</span><span class="k"><b class="em">—</b> 20均线</span><span>横轴：K线序号 + 太平洋时间；手机上可左右滑动。</span></p>

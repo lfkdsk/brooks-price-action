@@ -48,6 +48,54 @@ def voo_mapping(session, symbol_close_today=None):
     return None
 
 
+def voo_signals(session, since='2026-11-12', zone2=645, zone3=627, reclaim=660):
+    """Deterministic VOO tranche-signal check on completed daily bars up to `session` (markdown section or None).
+
+    Signal bar: bull close in the top 40% of its range. Tranche 2: signal bar with low <= zone2, confirmed the next
+    day by a higher close without a lower low. Tranche 3: same with low <= zone3, or a reclaim of `reclaim` after the
+    cycle low followed by a higher low and a close above the prior day's high. Public page: no personal holdings."""
+    try:
+        result = yahoo('VOO', 'range=6mo&interval=1d')
+        quote = result['indicators']['quote'][0]
+        bars = []
+        for i, stamp in enumerate(result.get('timestamp') or []):
+            day = dt.datetime.fromtimestamp(stamp, ET).date().isoformat()
+            v = prices(quote, i)
+            if v and day <= session:
+                bars.append(dict(day=day, **{k: v[k] for k in ('open', 'high', 'low', 'close')}))
+        if len(bars) < 3 or bars[-1]['day'] != session:
+            return None
+    except Exception:
+        return None
+    def sig(b):
+        rng = b['high'] - b['low']
+        return rng > 0 and b['close'] > b['open'] and (b['close'] - b['low']) / rng >= 0.6
+    t, y = bars[-1], bars[-2]
+    cycle = [b for b in bars if b['day'] >= since]
+    low_i = min(range(len(cycle)), key=lambda i: cycle[i]['low']) if cycle else None
+    L = cycle[low_i]['low'] if cycle else None
+    lines = []
+    for name, zone in (('第二批', zone2), ('第三批', zone3)):
+        if sig(y) and y['low'] <= zone and t['low'] >= y['low'] and t['close'] > y['close']:
+            lines.append(f'- 🔔 **{name}信号已确认**：{y["day"]} 在 {zone} 下方出现止跌阳线（低 {y["low"]:.2f}），今天没有创新低并收高（{t["close"]:.2f}）——止跌K线 + follow-through。')
+        elif sig(t) and t['low'] <= zone:
+            lines.append(f'- 🔔 **{name}：出现止跌信号K线，待下一交易日确认**（今天低 {t["low"]:.2f} ≤ {zone}，收在高位 {t["close"]:.2f}）。')
+    if cycle:
+        after = cycle[low_i + 1:]
+        reclaimed = [i for i, b in enumerate(after) if b['close'] >= reclaim]
+        if reclaimed:
+            post = after[reclaimed[0] + 1:]
+            if post and min(b['low'] for b in post) > L and len(post) >= 2 and t['close'] > y['high']:
+                lines.append(f'- 🔔 **第三批：反转确认**：收回 {reclaim} 后回调低点高于本轮最低 {L:.2f}（higher low），今天收盘 {t["close"]:.2f} 突破昨高。')
+            elif reclaimed[0] == len(after) - 1:
+                lines.append(f'- 👀 **VOO 收回 {reclaim}**（今天收 {t["close"]:.2f}）：反转尝试，等待回调形成 higher low。')
+    if not lines:
+        lines.append(f'- 暂无信号。今天 VOO 收 {t["close"]:.2f}，低 {t["low"]:.2f}，高 {t["high"]:.2f}；'
+                     f'距第二批区域上沿 {zone2}：{t["low"] - zone2:+.2f}，距第三批 {zone3}：{t["low"] - zone3:+.2f}，距收回 {reclaim}：{reclaim - t["close"]:+.2f}。')
+    lines.append(f'- 参考区域：第二批 634–{zone2}；第三批 620–{zone3}，或收回 {reclaim} 后出现 higher low。本轮最低 {L:.2f}。' if L else '')
+    return '**VOO 分批信号**\n' + '\n'.join(l for l in lines if l)
+
+
 def label(value, size=200):
     return isinstance(value, str) and bool(value.strip()) and len(value) <= size
 
@@ -114,6 +162,10 @@ containing price (number) and label (string)). Avoid overlapping annotation labe
     log = llm_log.recorder(api, scope='recap', symbol=symbol, session_or_asof=session, condition='recap')
     result, _, actual_model = model(config, bars, skill, prompt, lambda reading: parse_recap(reading, numbers),
                                     context=prior, log=log)
+    if symbol == 'SPY':
+        section = voo_signals(session)
+        if section:
+            result = dict(result, markdown=result['markdown'].rstrip() + '\n\n' + section)
     api.request('POST', '/api/recaps', dict(result, symbol=symbol, session=session, model=actual_model,
                                           skill_sha=sha, prior=prior, force=force))
     print(f'{symbol} {session}: recap saved')
