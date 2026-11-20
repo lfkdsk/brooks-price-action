@@ -305,13 +305,16 @@ def collect_symbol(config, api, sha, skill, symbol, bars, now, predict=llm):
         return errors + sum(future.result() for future in futures)
 
 
-def settings(description, force=False):
+def settings(description, force=False, bars_only=False, argv=None):
     parser = argparse.ArgumentParser(description=description)
     parser.add_argument('--config', type=pathlib.Path, default=HERE / 'config.json')
     if force:
         parser.add_argument('--force', action='store_true')
         parser.add_argument('--session', help='YYYY-MM-DD (America/New_York) to recap; default = today in New York')
-    args = parser.parse_args()
+    if bars_only:
+        parser.add_argument('--bars-only', action='store_true',
+                            help='upload the latest 5-minute bars only (no model calls, no predictions)')
+    args = parser.parse_args(argv)
     config = json.loads(args.config.read_text())
     skill = (args.config.resolve().parent / config.get('skill_dir', '../../skill/brooks-price-action')).resolve()
     return args, config, skill
@@ -323,9 +326,42 @@ def api_and_sha(config):
     return API(config['api_base'], read_token()), sha
 
 
-def main():
-    _, config, skill = settings(__doc__)
+def in_session_window(now):
+    """Weekday 09:30–16:10 New York: bars can still arrive, including the final bar."""
+    local = now.astimezone(ET)
+    minute = local.hour * 60 + local.minute
+    return local.weekday() < 5 and OPEN_MINUTE <= minute < CLOSE_MINUTE + 10
+
+
+def upload_bars(api, symbol, now, fetch=None):
+    """Refresh the live chart between decisions: POST bars only, never forecasts."""
+    bars = (fetch or fetch_intraday)(symbol, now)
+    session = now.astimezone(ET).date().isoformat()
+    if not any(b['session'] == session for b in bars):
+        return 0
+    api.request('POST', '/api/intraday/bars', {'bars': bars})
+    return 0
+
+
+def bars_only(config, symbols, now, api=None, fetch=None):
+    if not in_session_window(now):
+        return 0
+    api = api or API(config['api_base'], read_token())
+    errors = 0
+    for symbol in symbols:
+        try:
+            errors += upload_bars(api, symbol, now, fetch)
+        except Exception as exc:
+            print(f'{symbol} bars: {type(exc).__name__}: {str(exc)[:120]}')
+            errors += 1
+    return int(bool(errors))
+
+
+def main(argv=None):
+    args, config, skill = settings(__doc__, bars_only=True, argv=argv)
     symbols = list(dict.fromkeys(config.get('intraday_symbols', ['SPY'])))
+    if args.bars_only:
+        return bars_only(config, symbols, dt.datetime.now(UTC))
 
     def collect(symbol):
         try:

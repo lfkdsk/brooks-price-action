@@ -171,13 +171,23 @@ changes; changing a rule under the same condition name mixes regimes.
 
 ## Five-minute paper trading and daily recap
 
-Open `/intraday?symbol=SPY` for candlesticks, positions, net session P&L, equity,
-metrics, and readings. The chart defaults to the latest session with bars
-and the `skill` overlay. Select a session or condition, and tap a blue decision
-marker to see its probability, target, stop, and reading. The page checks for
-newly stored data every minute during weekday regular-session hours (09:30–16:00
-New York time) and stops when the last stored bar marks the session final.
-Candles update as the collector uploads them. Open `/recap?symbol=SPY` for the
+Open `/intraday?symbol=SPY` for the Chinese, phone-first page: a 今日概览 card
+(last price vs prior close, session/PT time, one-line read from `skill_chart`
+or `skill`), 各组现在怎么看 (each group's latest view, today's and cumulative net
+P&L; rule-based groups are marked 对照组), a horizontally scrollable 5-minute
+chart (EMA20, prior close/low, PT time axis, ▲/▼/○ decision markers, position
+shading and the latest target/stop for the selected group; `?group=` remembers
+the selection), a 观点时间轴 heat strip, a simplified 谁更准 leaderboard with
+collapsed 高级指标, cumulative equity in percent, and a help section. Tap a marker
+or strip cell for the decision's probability, target, stop and reading. During
+weekday regular-session hours the page refreshes data every minute in place
+(scroll position, selection and open panels are kept) and stops when the last
+stored bar marks the session final.
+`forward/runner/intraday.py --bars-only` uploads bars without model calls or
+predictions (and exits quietly outside the session); the optional
+`brooks-intraday-bars` timer runs it every minute 06:30–13:05 PT so candles stay
+current between 15-minute decisions.
+Open `/recap?symbol=SPY` for the
 latest Chinese review and chart, or `/recap/YYYY-MM-DD?symbol=SPY` for a specific
 session.
 

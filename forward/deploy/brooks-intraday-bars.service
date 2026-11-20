@@ -1,0 +1,12 @@
+[Unit]
+Description=Brooks intraday bars-only chart refresh (no model calls)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+Environment=BROOKS_REPO=%h/brooks-price-action
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/brooks-price-action/forward/deploy/run-intraday-bars.sh
+TimeoutStartSec=55s
+UMask=0077

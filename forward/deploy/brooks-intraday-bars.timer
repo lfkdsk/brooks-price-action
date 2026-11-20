@@ -1,0 +1,17 @@
+[Unit]
+Description=Refresh Brooks intraday bars every minute during the regular session
+
+[Timer]
+# Every minute 06:30–13:05 PT on weekdays, 25 seconds past the minute so a bar
+# that just closed has cleared the runner's 20-second buffer. 13:05:25 PT picks up
+# the final bar. The runner itself exits quietly outside 09:30–16:10 New York time
+# (holidays included), so these explicit enumerations only bound the schedule.
+OnCalendar=Mon..Fri *-*-* 06:30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59:25 America/Los_Angeles
+OnCalendar=Mon..Fri *-*-* 07..12:*:25 America/Los_Angeles
+OnCalendar=Mon..Fri *-*-* 13:00,01,02,03,04,05:25 America/Los_Angeles
+AccuracySec=1s
+Persistent=false
+Unit=brooks-intraday-bars.service
+
+[Install]
+WantedBy=timers.target

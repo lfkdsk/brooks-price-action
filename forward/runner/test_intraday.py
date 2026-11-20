@@ -7,7 +7,8 @@ import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
-from intraday import ET, UTC, collect_symbol, decisions, llm, parse_prediction, run_model, session_bars
+import intraday
+from intraday import ET, UTC, bars_only, collect_symbol, decisions, llm, parse_prediction, run_model, session_bars
 from recap import collect_recap, parse_recap
 
 
@@ -176,6 +177,45 @@ class IntradayTests(unittest.TestCase):
             run.assert_not_called()
             self.assertIn('chart Python unavailable', str(log.call_args_list))
         self.assertEqual(set(api.predictions), {(3, 'opening_bar')})
+
+    def test_bars_only_uploads_bars_without_model_or_predictions(self):
+        start = when(2026, 7, 9, 9, 30)
+        now = (start + dt.timedelta(minutes=51)).astimezone(UTC)
+        bars = session_bars('SPY', yahoo_result(session_starts(start, 10)), now)
+        api = FakeAPI()
+        fetch = Mock(return_value=bars)
+        with patch('intraday.subprocess.run') as run, patch('intraday.llm') as model:
+            self.assertEqual(bars_only({}, ['SPY', 'QQQ'], now, api, fetch), 0)
+            run.assert_not_called()
+            model.assert_not_called()
+        self.assertEqual(api.bar_uploads, 2)
+        self.assertEqual(api.predictions, {})
+        self.assertEqual([c.args[0] for c in fetch.call_args_list], ['SPY', 'QQQ'])
+
+    def test_bars_only_exits_quietly_outside_session(self):
+        fetch = Mock()
+        with patch('intraday.API') as api, patch('builtins.print') as log:
+            for now in (when(2026, 7, 9, 9, 29), when(2026, 7, 9, 16, 10), when(2026, 7, 11, 11, 0)):
+                self.assertEqual(bars_only({'api_base': 'x'}, ['SPY'], now.astimezone(UTC), fetch=fetch), 0)
+            api.assert_not_called()
+            log.assert_not_called()
+        fetch.assert_not_called()
+        # A holiday (no bars for today) uploads nothing.
+        api = FakeAPI()
+        self.assertEqual(bars_only({}, ['SPY'], when(2026, 7, 9, 10, 0).astimezone(UTC), api, Mock(return_value=[])), 0)
+        self.assertEqual(api.bar_uploads, 0)
+
+    def test_main_dispatches_bars_only_flag(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = pathlib.Path(tmp) / 'config.json'
+            config.write_text(json.dumps({'api_base': 'https://example.test', 'intraday_symbols': ['SPY']}))
+            with patch('intraday.bars_only', return_value=0) as only, patch('intraday.fetch_intraday') as fetch, \
+                    patch('intraday.collect_symbol') as collect:
+                self.assertEqual(intraday.main(['--config', str(config), '--bars-only']), 0)
+            only.assert_called_once()
+            self.assertEqual(only.call_args.args[1], ['SPY'])
+            fetch.assert_not_called()
+            collect.assert_not_called()
 
 
 class RecapTests(unittest.TestCase):

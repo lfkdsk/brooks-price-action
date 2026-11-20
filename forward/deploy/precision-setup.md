@@ -139,6 +139,21 @@ systemctl --user enable --now brooks-intraday.timer brooks-recap.timer
 systemctl --user list-timers brooks-intraday.timer brooks-recap.timer
 ```
 
+Optional live chart refresh between decisions (bars only, no model calls):
+
+```sh
+cp forward/deploy/brooks-intraday-bars.{service,timer} ~/.config/systemd/user/
+systemd-analyze calendar 'Mon..Fri *-*-* 06:30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59:25 America/Los_Angeles'
+systemd-analyze calendar 'Mon..Fri *-*-* 07..12:*:25 America/Los_Angeles'
+systemd-analyze calendar 'Mon..Fri *-*-* 13:00,01,02,03,04,05:25 America/Los_Angeles'
+systemctl --user daemon-reload
+systemctl --user enable --now brooks-intraday-bars.timer
+```
+
+It runs `forward/runner/intraday.py --bars-only` every minute 06:30–13:05 PT on
+weekdays under its own lock (`intraday-bars.lock`), never pulls git, and logs to
+`~/.local/state/brooks-forward/intraday-bars-YYYY-MM-DD.log`.
+
 Run the venv setup as the user that runs the timers. It installs Pillow under
 `~/brooks-price-action/.venv-forward` and can be rerun. Set `chart_python` in
 `forward/runner/config.json` if you use a different venv. The runner and recap

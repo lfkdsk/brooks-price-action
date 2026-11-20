@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {Script} from 'node:vm';
+import {Script, createContext} from 'node:vm';
 import {computeIntradayMetrics, decisionBar, sessionPositions} from '../src/intraday-metrics.js';
-import {buildOverlay, priorLevels} from '../src/intraday-chart.js';
+import {buildOverlay, liveChart, priorLevels, ptClock} from '../src/intraday-chart.js';
 import {intradayPage, recapPage, renderMarkdown} from '../src/intraday-pages.js';
 
 const session = '2026-11-17';
@@ -109,4 +109,53 @@ test('skill_chart pairs with skill on matching decisions and uses shared next-op
  assert.equal(positions.skill_chart.position, 'long');
  closeTo(positions.skill_chart.return, .03 - .0001);
  assert.deepEqual(positions.baseline, {position: 'flat', return: null});
+});
+
+test('intraday page script defines the __name shim and runs top-level code in a DOM-less sandbox', async () => {
+ const html = intradayPage();
+ const script = html.match(/<script>([\s\S]+)<\/script>/)[1];
+ assert.match(script, /^\/\/[^\n]*\nvar __name = \(fn, _name\) => fn;/);
+ for (const text of ['今日概览', '各组现在怎么看', '走势图', '观点时间轴', '谁更准', '高级指标', '累计收益', '怎么看这个页面'])
+  assert.ok(html.includes(text), text);
+ assert.ok(script.includes('样本太少，仅供参考'));
+ // Simulate esbuild keep_names wrapping a serialized helper.
+ const wrapped = script.replace('const $ = id => document.getElementById(id);',
+  'const $ = __name(id => document.getElementById(id), "$");');
+ assert.notEqual(wrapped, script);
+ for (const source of [script, wrapped]) {
+  // Browser globals other than the DOM, so the boot reaches its first `document` access.
+  const context = createContext({URL, URLSearchParams, Intl, setTimeout() {}, clearTimeout() {}, addEventListener() {},
+   location: {search: '?symbol=SPY', href: 'https://example.test/intraday?symbol=SPY'}, history: {replaceState() {}}});
+  const started = new Script(source).runInContext(context);
+  assert.equal(typeof context.__name, 'function');
+  assert.equal(typeof context.liveChart, 'function');
+  // Every global the boot needs before touching the DOM must exist: the first failure is `document`.
+  await assert.rejects(started, e => e.name === 'ReferenceError' && /document/.test(e.message));
+ }
+});
+
+test('live chart draws Chinese guides, triangle markers, PT axis and scrolls on narrow screens', () => {
+ assert.equal(ptClock(1), '6:30');
+ assert.equal(ptClock(7), '7:00');
+ assert.equal(ptClock(79), '13:00');
+ const prior = '2026-11-16';
+ const bars = [bar(78, {session: prior, close: 99, low: 96}),
+  ...Array.from({length: 40}, (_, i) => bar(i + 1, {close: 100 + (i % 3) - 1}))];
+ const predictions = [prediction(3), prediction(6, {always_in: 'short'}),
+  prediction(9, {always_in: 'unclear', target: 102.5, stop: 97.5})];
+ const overlay = buildOverlay(bars, predictions, session, 'skill');
+ const svg = liveChart(bars, {session, prior: priorLevels(bars, session), overlay, latest: overlay.decisions.at(-1),
+  activeBar: 6, viewWidth: 360, height: 320, minStep: 10});
+ assert.match(svg, /昨收 99\.00/);
+ assert.match(svg, /目标 102\.50/);
+ assert.match(svg, /止损 97\.50/);
+ assert.match(svg, /class="dm dm-long" data-bar="3"/);
+ assert.match(svg, /class="dm dm-short active" data-bar="6"/);
+ assert.match(svg, /class="dm dm-flat" data-bar="9"[\s\S]*<circle/);
+ assert.match(svg, />7:00</);
+ assert.match(svg, /class="shade-long"/);
+ assert.doesNotMatch(svg, /fill="#438bdb"/);
+ const width = Number(svg.match(/width="(\d+)"/)[1]);
+ assert.ok(width > 360, 'phone chart should be wider than the viewport and scroll');
+ assert.match(liveChart([], {session}), /还没有K线/);
 });
