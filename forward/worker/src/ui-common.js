@@ -117,11 +117,22 @@ export {isNum, pct, ratio, num, tone, sideOf, pill, drawdown, drawEquity};
 
 // Opening of every inline page script: the __name shim MUST stay the first statement
 // (wrangler/esbuild keep_names wraps serialized functions in __name()).
+// Serialize a browser function under every name the page code may use: its source name, which a bundler may have
+// renamed (num -> num2), the keep_names name (fn.name) and an explicit key. Bundled callers may use either.
+export function emitFunction(fn, key) {
+ const src = fn.toString();
+ const own = (src.match(/^(?:async\s+)?function\s*\*?\s*([\w$]+)/) || [])[1];
+ const names = [...new Set([key, fn.name, own].filter(n => n && /^[A-Za-z_$][\w$]*$/.test(n)))];
+ if (!names.length) throw new Error('cannot serialize anonymous function');
+ return 'var ' + names[0] + ' = ' + src + ';' + names.slice(1).map(n => ' var ' + n + ' = ' + names[0] + ';').join('');
+}
+
 export function scriptPrelude(extra = []) {
  return `// wrangler/esbuild keep_names wraps serialized functions in __name(); define it for the browser.
 var __name = (fn, _name) => fn;
-const escapeHtml = ${escapeHtml.toString()};
-${[stripPreamble, renderMarkdown, ...Object.values(clientHelpers), ...extra].map(fn => fn.toString()).join('\n')}`;
+${emitFunction(escapeHtml, 'escapeHtml')}
+${[emitFunction(stripPreamble, 'stripPreamble'), emitFunction(renderMarkdown, 'renderMarkdown'),
+   ...Object.entries(clientHelpers).map(([k, fn]) => emitFunction(fn, k)), ...extra.map(fn => emitFunction(fn))].join('\n')}`;
 }
 
 // ---- Shared CSS ----
