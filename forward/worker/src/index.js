@@ -30,11 +30,16 @@ export default {async fetch(request,env){
  const u=new URL(request.url),path=u.pathname,db=env.DB;
  try{
  if(request.method==='POST'){
-  if(!['/api/bars','/api/predictions','/api/runs',...intradayWrites,...archiveWrites].includes(path))return json({error:'Not found'},404);
+  if(!['/api/bars','/api/predictions','/api/runs','/api/snapshots/run',...intradayWrites,...archiveWrites].includes(path))return json({error:'Not found'},404);
   if(!await authorized(request.headers.get('authorization'),env.WRITE_TOKEN))return json({error:'Unauthorized'},401);
   if(Number(request.headers.get('content-length'))>2000000)return json({error:'Body too large'},413);
   const raw=await request.text();if(raw.length>2000000)return json({error:'Body too large'},413);
-  let body;try{body=JSON.parse(raw)}catch{return json({error:'Invalid JSON'},400)}
+  let body;try{body=JSON.parse(raw||'{}')}catch{return json({error:'Invalid JSON'},400)}
+  // Manual (authenticated) snapshot run: same job as the cron, returns its result or the error for debugging.
+  if(path==='/api/snapshots/run'){
+   try{return json({ok:true,result:await runSnapshots(db,{intradayCostBps:Number(env.INTRADAY_COST_BPS??1)})??null})}
+   catch(e){return json({ok:false,error:String(e?.message||e),stack:String(e?.stack||'').split('\n').slice(0,6)},500)}
+  }
   if(intradayWrites.includes(path))return await intraday.write(path,body,db);
   if(archiveWrites.includes(path))return await archive.write(path,body,db);
   if(path==='/api/bars'){
