@@ -153,7 +153,9 @@ you give a key SPY level in 整体判断 and in the "明日关注" part, also gi
 (multiply by voo_per_spy, round to whole dollars), and end 明日关注 with one line headed "**VOO 视角**" for long-term
 holders (VOO cannot be shorted in a cash account): which VOO zones are support worth watching and what Brooks-style
 signal (e.g. strong bull reversal bar with follow-through, higher low / double bottom) would confirm a bottom vs a
-bear-flag bounce. Educational only, no orders or position sizes. Then continue with day type, a numbered-bar narrative with evidence (opening range, breakouts, spikes or climaxes,
+bear-flag bounce. Educational only, no orders or position sizes. Write for a human reader: never paste raw feature-script tags (strong_bull, bull_reversal_shape, big, wedge_bottom_candidate,
+micro_double_top…) — say it in words ("强阳线", "收在高位的反转K线", "wedge bottom 候选"). day_type in the JSON must be a short
+readable phrase with spaces (e.g. "Bear trend day, late sell climax"), not snake_case. Then continue with day type, a numbered-bar narrative with evidence (opening range, breakouts, spikes or climaxes,
 reversals, higher lows or lower highs, and tests of breakout points where applicable), key levels,
 daily-chart context, what to watch tomorrow, and an educational/non-advice disclaimer.
 Finish with a fenced json block of day_type (string), annotations (up to 12 objects containing
