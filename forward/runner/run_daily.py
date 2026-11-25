@@ -92,6 +92,9 @@ def llm_prediction(config, condition, symbol, bars, skill, log=None):
                        'Bash(python3:*) Read', '--add-dir', str(stage)]
             if condition == 'skill':
                 command += ['--add-dir', str(stage / 'skill')]
+            # Pinned: without --model the CLI default drifted between models from day to day.
+            if config.get('daily_model'):
+                command += ['--model', config['daily_model']]
             # The collector token must not be inherited by the CLI or its subprocesses.
             env = {k: v for k, v in os.environ.items() if k != 'WRITE_TOKEN'}
             _, reading, model, finish = llm_log.run_cli(

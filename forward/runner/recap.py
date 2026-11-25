@@ -163,7 +163,7 @@ bar (today's bar number), label (short string), and pos (above or below)), and l
 containing price (number) and label (string)). Avoid overlapping annotation labels where possible."""
     log = llm_log.recorder(api, scope='recap', symbol=symbol, session_or_asof=session, condition='recap')
     result, _, actual_model = model(config, bars, skill, prompt, lambda reading: parse_recap(reading, numbers),
-                                    context=prior, log=log)
+                                    config.get('recap_model'), context=prior, log=log)
     if symbol == 'SPY':
         section = voo_signals(session)
         if section:
