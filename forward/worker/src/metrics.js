@@ -1,6 +1,6 @@
 // All calculations depend only on persisted bars and submitted signals.
-const mean = a => a.length ? a.reduce((x,y)=>x+y,0)/a.length : null;
-const side = p => ({long:1,short:-1,unclear:0}[p?.always_in] ?? 0);
+export const mean = a => a.length ? a.reduce((x,y)=>x+y,0)/a.length : null;
+export const side = p => ({long:1,short:-1,unclear:0}[p?.always_in] ?? 0);
 // Ten probability buckets [0,.1), …, [.9,1] of [probability, outcome] pairs (shared with intraday).
 export function calibration(pairs) {
  const buckets=Array.from({length:10},()=>[]);
@@ -38,7 +38,7 @@ export function barrier(p, future, entry) {
  }
  return 'neither';
 }
-function account(rows) {
+export function account(rows) {
  const dates=new Map();
  for(const r of rows) { const a=dates.get(r.date)||[]; a.push(r); dates.set(r.date,a); }
  let equity=1,peak=1,dd=0; const curve=[];

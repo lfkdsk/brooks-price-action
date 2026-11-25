@@ -75,6 +75,37 @@ function levelsBad(p, close) {
  return (isNum(p.target) && d * (p.target - c) <= 0) || (isNum(p.stop) && d * (p.stop - c) >= 0);
 }
 function levelsTag(p, close) { return levelsBad(p, close) ? '<span class="chip warn lv-bad" title="做多时目标应高于、止损应低于判断时价格；做空相反">目标/止损方向异常</span>' : ''; }
+// Scoring protocol helpers: ?v=1 shows the old rules, anything else the new ones.
+function protocolVersion() { return new URLSearchParams(location.search).get('v') === '1' ? 1 : 2; }
+function protocolHref(version) {
+ const u = new URL(location.href);
+ if (version === 1) u.searchParams.set('v', '1');
+ else u.searchParams.delete('v');
+ return u.pathname + u.search;
+}
+function protocolBar(version) {
+ const link = (n, text) => '<a href="' + escapeHtml(protocolHref(n)) + '"' + (n === version ? ' aria-current="true"' : '') + '>' + text + '</a>';
+ return '<div class="proto-row"><div class="proto-sw" role="group" aria-label="统计规则">' + link(2, '新规则 v2') + link(1, '旧规则 v1') + '</div>' +
+  (version === 1 ? '<span class="chip warn">旧规则：成交价不可执行，仅供参考</span>' : '') + '</div>' +
+  '<p class="proto-note">新规则按判断写入后真正还能成交的价格算：日线为次日开盘，日内为之后第一根1分钟K线开盘；旧规则按当日收盘 / 下一根5分钟K线开盘。v2 从 2026-11-25（日线）/ 2026-11-27（日内）开始统计。</p>';
+}
+function protocolEmpty(from) {
+ return '<p class="empty">新规则从 ' + escapeHtml(from || '—') + ' 开始统计，暂无数据。<a href="' + escapeHtml(protocolHref(1)) + '">查看旧规则 v1</a></p>';
+}
+// Derived `_ts` conditions: the same decisions, with target/stop executed.
+function isTsKey(key) { return /_ts$/.test(String(key)); }
+function tsGroup(base) { return {...base, key: base.key + '_ts', name: base.name + '（执行目标/止损）', short: base.short + '·目标止损', ts: true}; }
+// [[group, metrics], …] with every `_ts` row directly under its base (or dropped while hidden).
+function tsRows(rows, show) {
+ const plain = rows.filter(r => !r[0].ts), ts = rows.filter(r => r[0].ts);
+ const orphan = ts.filter(t => !plain.some(r => r[0].key + '_ts' === t[0].key));
+ return plain.flatMap(r => [r, ...(show ? ts.filter(t => t[0].key === r[0].key + '_ts') : [])]).concat(orphan);
+}
+function tsToggle(button, rows, show) {
+ button.hidden = !rows.some(r => r[0].ts);
+ button.setAttribute('aria-pressed', String(show));
+ button.textContent = show ? '隐藏执行目标/止损版' : '显示执行目标/止损版';
+}
 function drawdown(v) { return isNum(v) && v > 0 ? '−' + (v * 100).toFixed(2) + '%' : '0.00%'; }
 
 // Cumulative-return lines in percent; the selected series is drawn last and labelled.
@@ -110,7 +141,7 @@ function drawEquity(parent, series, selected) {
   const on = s.key === selected;
   const pts = [[index.get(s.curve[0].date) - 1, 0], ...s.curve.map(d => [index.get(d.date), d.equity - 1])];
   out.push('<polyline class="ln" points="' + pts.map(([i, v]) => x(i).toFixed(1) + ',' + y(v).toFixed(1)).join(' ') + '" stroke="' + s.color +
-   '" stroke-width="' + (on ? 3 : 1.6) + '" opacity="' + (on ? 1 : .45) + '"/>');
+   '" stroke-width="' + (on ? 3 : 1.6) + '" opacity="' + (on ? 1 : .45) + '"' + (s.dash ? ' stroke-dasharray="5 4"' : '') + '/>');
   if (on) {
    for (const [i, v] of pts.slice(1)) out.push('<circle cx="' + x(i) + '" cy="' + y(v) + '" r="4" fill="' + s.color + '" stroke="var(--card)" stroke-width="2"><title>' +
     s.name + ' ' + days[i - 1] + '：' + sign(v) + '</title></circle>');
@@ -122,8 +153,8 @@ function drawEquity(parent, series, selected) {
   '" role="img" aria-label="各组累计收益（百分比）">' + out.join('') + '</svg>';
 }
 
-export const clientHelpers = {isNum, pct, ratio, num, tone, sideOf, pill, levelsBad, levelsTag, drawdown, drawEquity};
-export {isNum, pct, ratio, num, tone, sideOf, pill, levelsBad, levelsTag, drawdown, drawEquity};
+export const clientHelpers = {isNum, pct, ratio, num, tone, sideOf, pill, levelsBad, levelsTag, protocolVersion, protocolHref, protocolBar, protocolEmpty, isTsKey, tsGroup, tsRows, tsToggle, drawdown, drawEquity};
+export {isNum, pct, ratio, num, tone, sideOf, pill, levelsBad, levelsTag, protocolVersion, protocolHref, protocolBar, protocolEmpty, isTsKey, tsGroup, tsRows, tsToggle, drawdown, drawEquity};
 
 // Opening of every inline page script: the __name shim MUST stay the first statement
 // (wrangler/esbuild keep_names wraps serialized functions in __name()).
@@ -236,6 +267,16 @@ svg.eq .zero{stroke:var(--faint)}svg.eq .ln{fill:none;stroke-linejoin:round;stro
 .md pre code,.reading pre code{padding:0;background:none}
 .md em{color:var(--muted)}
 .empty{color:var(--muted);padding:16px}
+.proto{margin:0 0 12px}.proto-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.proto-sw{display:inline-flex;gap:3px;padding:3px;border:1px solid var(--line);border-radius:10px;background:var(--card)}
+.proto-sw a{padding:3px 10px;border-radius:7px;font-size:13px;text-decoration:none;color:var(--muted);white-space:nowrap}
+.proto-sw a[aria-current]{background:var(--flat-soft);color:var(--ink);font-weight:600}
+.proto-note{font-size:12.5px;color:var(--muted);margin:6px 2px 0}
+.bhead{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px}.bhead h2{margin:0}
+.ts-btn{border:1px solid var(--line);background:var(--bg);border-radius:999px;padding:3px 10px;font-size:12.5px;cursor:pointer}
+.ts-btn[aria-pressed=true]{border-color:var(--ink);font-weight:600}
+tr.ts-row td:first-child{padding-left:14px;color:var(--muted)}tr.ts-row td:first-child::before{content:"└ ";color:var(--faint)}
+tr.ts-row td{background:color-mix(in srgb,var(--bg) 55%,transparent)}
 `;
 
 export function topNav(current) {

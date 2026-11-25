@@ -67,7 +67,7 @@ function drawLines(parent, series, opts) {
   if (!pts.length) continue;
   const on = !o.selected || s.key === o.selected;
   out.push('<polyline class="ln" points="' + pts.map(p => x(index.get(p.date)).toFixed(1) + ',' + y(p.value).toFixed(1)).join(' ') + '" stroke="' + s.color +
-   '" stroke-width="' + (on ? 2.5 : 1.5) + '" opacity="' + (on ? 1 : .4) + '"/>');
+   '" stroke-width="' + (on ? 2.5 : 1.5) + '" opacity="' + (on ? 1 : .4) + '"' + (s.dash ? ' stroke-dasharray="5 4"' : '') + '/>');
   for (const p of pts) out.push('<circle cx="' + x(index.get(p.date)).toFixed(1) + '" cy="' + y(p.value).toFixed(1) + '" r="' + (on ? 3.5 : 2.5) + '" fill="' + s.color +
    '" stroke="var(--card)" stroke-width="1.5" opacity="' + (on ? 1 : .5) + '"><title>' + escapeHtml(s.name) + ' ' + p.date + '：' + fmt(p.value) + (p.n != null ? '（样本 ' + p.n + '）' : '') + '</title></circle>');
  }
@@ -102,7 +102,8 @@ export const exploreHelpers = {drawLines, drawCalibration};
 
 export function explorePage(helpers = exploreHelpers) {
  const config = {GROUPS, CONTROLS, SYMBOL_HINTS};
- return pageShell({title: '数据分析 · Brooks Forward', current: 'explore', css: exploreCss, body: `<section class="card" aria-labelledby="ex-title">
+ return pageShell({title: '数据分析 · Brooks Forward', current: 'explore', css: exploreCss, body: `<div id="proto" class="proto" aria-label="统计规则切换"></div>
+<section class="card" aria-labelledby="ex-title">
  <h1 id="ex-title">数据分析 · 按时间段、标的和组别回看</h1>
  <div id="scope" class="seg" role="group" aria-label="范围" style="margin-top:10px"><button data-scope="daily" aria-pressed="true">日线</button><button data-scope="intraday" aria-pressed="false">日内（5分钟）</button></div>
  <div class="fgrid">
@@ -115,7 +116,7 @@ export function explorePage(helpers = exploreHelpers) {
  <div id="groups" class="chips" role="group" aria-label="组别"></div>
  <div class="frow"><span id="summary" class="meta" style="margin:0">正在读取数据…</span><a id="csv" class="btn primary" href="/api/export.csv" download>下载 CSV</a></div>
 </section>
-<section class="card" aria-labelledby="board-title"><h2 id="board-title">谁更准</h2>
+<section class="card" aria-labelledby="board-title"><div class="bhead"><h2 id="board-title">谁更准</h2><button id="ts-toggle" class="ts-btn" aria-pressed="false" hidden>显示执行目标/止损版</button></div>
  <div id="board" class="table-scroll"></div>
  <details class="adv-wrap"><summary>高级指标</summary><div id="adv"></div></details>
 </section>
@@ -136,7 +137,9 @@ export function explorePage(helpers = exploreHelpers) {
 <details class="card help"><summary>怎么用这个页面</summary><ul>
  <li>先选范围：日线是 6 个 ETF 的每日模拟仓，日内是 5 分钟K线、每 15 分钟一次判断的模拟仓。</li>
  <li>日期按判断日（日内按交易日）筛选；判断的结果（5 日 / 30 分钟后方向、目标止损）会用之后的K线计算，所以最近的判断可能还在「待定」。</li>
- <li>收益只统计所选时间段内的持仓，并在时间段结束后的第一个收盘平仓。</li>
+ <li><b>新规则 v2</b>（默认）：日线判断在次日开盘成交、持有到再下一个开盘，时间段结束后再等这两个开盘；日内判断在写入后第一根1分钟K线的开盘成交（缺1分钟数据时用之后第一根5分钟K线），收盘平仓。只统计 2026-11-25（日线）/ 2026-11-27（日内）起的判断。</li>
+ <li><b>旧规则 v1</b>：日线按收盘价进出并在时间段结束后的第一个收盘平仓，日内按下一根5分钟K线开盘成交，成交价不可执行，仅供参考。</li>
+ <li>「执行目标/止损」版：方向和成交相同，碰到该判断的目标或止损就出场（同一根K线都碰到算止损），之后空仓到下一次判断。</li>
  <li>「下载 CSV」导出当前筛选下每一条判断及其结果，可用 Excel / Python 自己分析。</li>
  <li>模型花费来自每次调用 Claude 时记录的 token 和费用；开始记录之前的判断没有花费数据。</li>
  <li>样本少时结果主要是噪声；这里只是模拟记录，不构成投资建议。</li>
@@ -152,8 +155,9 @@ async function loadExplore({GROUPS, CONTROLS, SYMBOL_HINTS}) {
  const params = new URLSearchParams(location.search);
  const state = {scope: params.get('scope') === 'intraday' ? 'intraday' : 'daily', from: params.get('from') || '', to: params.get('to') || '',
   symbol: params.get('symbol') || '', conditions: params.get('conditions') ? params.get('conditions').split(',') : null,
-  data: null, selected: null, version: 0};
- const groupOf = key => groupsFor(state.scope).find(g => g.key === key) ||
+  data: null, selected: null, version: 0, showTs: false};
+ const rules = protocolVersion();
+ const groupOf = key => isTsKey(key) ? tsGroup(groupOf(key.slice(0, -3))) : groupsFor(state.scope).find(g => g.key === key) ||
   (key === 'recap' ? {key, name: '收盘复盘', short: '复盘', control: false, color: 'var(--faint)'} : {key, name: key, short: key, control: false, color: 'var(--faint)'});
  const order = key => { const i = GROUPS[state.scope].findIndex(g => g[0] === key); return i < 0 ? 99 : i; };
  const query = () => {
@@ -162,8 +166,10 @@ async function loadExplore({GROUPS, CONTROLS, SYMBOL_HINTS}) {
   if (state.to) q.set('to', state.to);
   if (state.symbol) q.set('symbol', state.symbol);
   if (state.conditions) q.set('conditions', state.conditions.join(','));
+  if (rules === 1) q.set('v', '1');
   return q;
  };
+ const apiQuery = () => { const q = query(); q.set('v', String(rules)); return q; };
  const get = async url => {
   const r = await fetch(url);
   if (!r.ok) throw new Error('HTTP ' + r.status);
@@ -186,23 +192,30 @@ async function loadExplore({GROUPS, CONTROLS, SYMBOL_HINTS}) {
    const g = groupOf(k), on = !state.conditions || state.conditions.includes(k);
    return '<button data-key="' + escapeHtml(k) + '" aria-pressed="' + on + '"><span class="sw" style="background:' + g.color + '"></span>' + escapeHtml(g.name) + '</button>';
   }).join('') || '<span class="meta">还没有组别数据</span>';
-  $('csv').href = '/api/export.csv?' + query();
+  $('csv').href = '/api/export.csv?' + apiQuery();
  }
 
- const rows = () => Object.entries(state.data?.metrics || {}).map(([k, m]) => [groupOf(k), m])
+ const rows = () => tsRows(allRows(), state.showTs);
+ const allRows = () => Object.entries(state.data?.metrics || {}).map(([k, m]) => [groupOf(k), m])
   .sort((a, b) => (b[1].account.total_return ?? -1) - (a[1].account.total_return ?? -1));
+ // Before the first v2 decision (as opposed to a filter that matches nothing).
+ const noData = text => {
+  const d = state.data;
+  return d?.protocol?.from && !((d.options?.last || '') >= d.protocol.from) ? protocolEmpty(d.protocol.from) : text;
+ };
  const samples = m => Math.round((m.direction_coverage || 0) * (m.mature || 0));
 
  function renderBoard() {
   const list = rows(), daily = state.scope === 'daily';
-  if (!list.length) { $('board').innerHTML = '<p class="empty">这个筛选条件下没有判断。</p>'; $('adv').innerHTML = ''; return; }
+  tsToggle($('ts-toggle'), allRows(), state.showTs);
+  if (!list.length) { $('board').innerHTML = noData('<p class="empty">这个筛选条件下没有判断。</p>'); $('adv').innerHTML = ''; return; }
   let few = false;
   $('board').innerHTML = '<table><thead><tr><th>组别</th><th>累计收益</th><th>最大回撤</th><th>' + (daily ? '5日准确率' : '方向准确率') + '<small>（样本数）</small></th><th>' + (daily ? '天数' : '交易日') + '</th></tr></thead><tbody>' +
    list.map(([g, m]) => {
     const n = samples(m), small = n < 100;
     few = few || (small && n > 0);
     const acc = isNum(m.direction_hit_rate) ? '<span' + (small ? ' class="few"' : '') + '>' + ratio(m.direction_hit_rate) + (small ? '*' : '') + '</span>' : '<span class="few">待定</span>';
-    return '<tr><td class="gcell"><i class="dot" style="background:' + g.color + '"></i>' + escapeHtml(g.name) + (g.control ? ' <small>对照组</small>' : '') + '</td>' +
+    return '<tr' + (g.ts ? ' class="ts-row"' : '') + '><td class="gcell"><i class="dot" style="background:' + g.color + '"></i>' + escapeHtml(g.name) + (g.control ? ' <small>对照组</small>' : '') + '</td>' +
      '<td class="' + tone(m.account.total_return) + '">' + pct(m.account.total_return) + '</td><td>' + drawdown(m.account.max_drawdown) + '</td>' +
      '<td>' + acc + '<small>（' + n + '）</small></td><td>' + m.account.days + '</td></tr>';
    }).join('') + '</tbody></table>' +
@@ -213,16 +226,20 @@ async function loadExplore({GROUPS, CONTROLS, SYMBOL_HINTS}) {
    ['Brier', m => m.brier, v => num(v, 3)], ['Log loss', m => m.log_loss, v => num(v, 3)],
    ['目标先到', m => m.target_before_stop_rate, v => ratio(v, 0)], ['已出结果', m => m.mature, v => v ?? '—'],
    [daily ? '待定5日' : '待定+6', m => daily ? m.pending_5 : m.pending_6, v => v ?? '—'], ['待定目标/止损', m => m.pending_horizon, v => v ?? '—'],
-   ['方向异常', m => m.levels_inverted, v => v ? '<span class="neg">' + v + '</span>' : (v ?? '—')]];
+   ['方向异常', m => m.levels_inverted, v => v ? '<span class="neg">' + v + '</span>' : (v ?? '—')],
+   ...(rules === 2 ? [[daily ? '迟到判断' : '未成交', m => daily ? m.late : m.unfilled, v => v ?? '—'], ...(daily ? [] : [['被取代', m => m.superseded, v => v ?? '—']]),
+    ['目标/止损出场', m => isNum(m.target_exits) ? m.target_exits + '/' + m.stop_exits : null, v => v ?? '—'], ['忽略价位', m => m.levels_ignored, v => v ?? '—']] : [])];
   let html = '<div class="table-scroll"><table class="wide"><thead><tr><th>组别</th>' + cols.map(c => '<th>' + c[0] + '</th>').join('') + '</tr></thead><tbody>' +
    list.map(([g, m]) => '<tr><td>' + escapeHtml(g.short) + '</td>' + cols.map(c => '<td>' + c[2](c[1](m)) + '</td>').join('') + '</tr>').join('') + '</tbody></table></div>' +
    '<div class="defs">' + [['夏普', '年化夏普比率，交易日少于几十天时基本没有意义。'], ['持仓时间', '有仓位（多或空）的时间占比。'],
     ['覆盖率', '已出结果的判断中，给出明确做多/做空的比例。'], ['Brier', '概率准确度，越小越好；<0.25 才比瞎猜好。'],
     ['Log loss', '概率的对数损失，越小越好；<0.693 才比瞎猜好。'], ['目标先到', '给了目标和止损的判断里，先碰到目标的比例。'],
-    ['方向异常', '目标/止损方向异常：做多时目标不高于或止损不低于判断时价格（做空相反）的判断数，判断照常计入。']]
+    ['方向异常', '目标/止损方向异常：做多时目标不高于或止损不低于判断时价格（做空相反）的判断数，判断照常计入。'],
+    ...(rules === 2 ? [[daily ? '迟到判断' : '未成交', daily ? '写入时次日已开盘的判断数（当天算空仓）。' : '最后一根K线之前没有可成交K线的判断数（保持原仓位）。'],
+     ['目标/止损出场', '「执行目标/止损」版里碰到目标 / 止损出场的次数。'], ['忽略价位', '没给或相对成交价方向不对、因而不执行的目标/止损个数。']] : [])]
     .map(([k, v]) => '<div><b>' + k + '：</b>' + v + '</div>').join('') + '</div>';
   const pairs = [];
-  for (const [g] of list) for (const [base, p] of Object.entries(state.data.paired?.[g.key] || {})) if (p.n) pairs.push([g, groupOf(base), p]);
+  for (const [g] of list) if (!g.ts) for (const [base, p] of Object.entries(state.data.paired?.[g.key] || {})) if (p.n) pairs.push([g, groupOf(base), p]);
   if (pairs.length) html += '<h3>配对比较（只比两组都有判断的同一时间点）</h3><div class="table-scroll"><table class="wide"><thead><tr><th>组别</th><th>对比</th><th>配对数</th><th>准确率差</th><th>Brier差</th></tr></thead><tbody>' +
    pairs.map(([g, b, p]) => '<tr><td>' + escapeHtml(g.short) + '</td><td>' + escapeHtml(b.short) + '</td><td>' + p.n + '</td><td class="' + tone(p.delta.direction_hit_rate) + '">' +
     pct(p.delta.direction_hit_rate, 1) + '</td><td class="' + (isNum(p.delta.brier) ? tone(-p.delta.brier) : '') + '">' + (isNum(p.delta.brier) ? (p.delta.brier > 0 ? '+' : p.delta.brier < 0 ? '−' : '') + Math.abs(p.delta.brier).toFixed(3) : '—') + '</td></tr>').join('') +
@@ -239,17 +256,18 @@ async function loadExplore({GROUPS, CONTROLS, SYMBOL_HINTS}) {
  function renderCharts() {
   const list = rows();
   if (!state.selected || !list.some(([g]) => g.key === state.selected)) state.selected = list.find(([g]) => !g.control)?.[0].key || list[0]?.[0].key || null;
-  drawEquity($('equity'), list.map(([g, m]) => ({key: g.key, name: g.short, color: g.color, curve: m.account.equity_curve || []})), state.selected);
+  drawEquity($('equity'), list.map(([g, m]) => ({key: g.key, name: g.short, color: g.color, dash: g.ts, curve: m.account.equity_curve || []})), state.selected);
+  if (!list.length) $('equity').innerHTML = noData($('equity').innerHTML);
   legend('equity-legend');
   const roll = state.data?.rolling || {};
-  const series = field => list.map(([g]) => ({key: g.key, name: g.short, color: g.color,
+  const series = field => list.map(([g]) => ({key: g.key, name: g.short, color: g.color, dash: g.ts,
    points: (roll[g.key] || []).map(p => ({date: p.date, value: p[field], n: field === 'direction_hit_rate' ? p.n : null}))}));
   drawLines($('roll-hit'), series('direction_hit_rate'), {center: .5, fixed: [.4, .6], selected: state.selected, label: '滚动20日方向准确率', empty: '还没有已出结果的判断。'});
   drawLines($('roll-ret'), series('total_return'), {center: 0, selected: state.selected, label: '滚动20日收益', format: v => (v > 0 ? '+' : v < 0 ? '−' : '') + Math.abs(v * 100).toFixed(1) + '%'});
   legend('roll-legend');
   const src = state.data?.rolling_source;
   $('roll-src').textContent = src === 'snapshots' ? '数据来源：每日指标快照。' : src === 'mixed' ? '数据来源：每日指标快照；没有快照的日子按同样规则现算。' : '数据来源：按同样规则现算（还没有每日快照）。';
-  const cal = list.filter(([g]) => !g.control).map(([g, m]) => ({key: g.key, name: g.short, color: g.color, buckets: m.calibration || []}));
+  const cal = list.filter(([g]) => !g.control && !g.ts).map(([g, m]) => ({key: g.key, name: g.short, color: g.color, buckets: m.calibration || []}));
   drawCalibration($('calib'), cal);
   $('cal-legend').innerHTML = cal.filter(s => s.buckets.some(b => b.n)).map(s => '<span class="chip"><span class="sw" style="background:' + s.color + '"></span>' + escapeHtml(s.name) + '</span>').join('');
  }
@@ -269,13 +287,14 @@ async function loadExplore({GROUPS, CONTROLS, SYMBOL_HINTS}) {
  }
 
  function renderAll() {
+  $('proto').innerHTML = protocolBar(rules);
   renderFilters();
   renderBoard();
   renderCharts();
   renderCosts();
   const d = state.data;
   if (d) {
-   const n = Object.values(d.metrics).reduce((a, m) => a + (m.predictions ?? m.decisions ?? 0), 0);
+   const n = Object.values(d.metrics).filter(m => !m.derived_from).reduce((a, m) => a + (m.predictions ?? m.decisions ?? 0), 0);
    $('summary').textContent = (state.scope === 'daily' ? '日线' : '日内') + ' · ' + (d.range.first ? d.range.first + ' 至 ' + d.range.last : '无数据') + ' · ' + n + ' 个判断' +
     (state.symbol ? ' · ' + state.symbol : '');
   }
@@ -284,9 +303,10 @@ async function loadExplore({GROUPS, CONTROLS, SYMBOL_HINTS}) {
  const refresh = async () => {
   const v = ++state.version;
   history.replaceState(null, '', location.pathname + '?' + query());
-  $('csv').href = '/api/export.csv?' + query();
+  $('proto').innerHTML = protocolBar(rules);
+  $('csv').href = '/api/export.csv?' + apiQuery();
   try {
-   const data = await get('/api/explore?' + query());
+   const data = await get('/api/explore?' + apiQuery());
    if (v !== state.version) return;
    state.data = data;
    renderAll();
@@ -298,6 +318,7 @@ async function loadExplore({GROUPS, CONTROLS, SYMBOL_HINTS}) {
   }
  };
 
+ $('ts-toggle').addEventListener('click', () => { state.showTs = !state.showTs; renderBoard(); renderCharts(); });
  $('scope').addEventListener('click', e => {
   const b = e.target.closest('button');
   if (!b || b.dataset.scope === state.scope) return;

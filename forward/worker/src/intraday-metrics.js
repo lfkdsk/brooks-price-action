@@ -3,11 +3,11 @@ import {barrier, calibration} from './metrics.js';
 export const mechanical = ['ema20_5m', 'opening_bar', 'buy_hold'];
 export const decisionBar = n => Number.isInteger(n) && n >= 3 && n <= 75 && n % 3 === 0;
 const mean = xs => xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null;
-const sessionKey = b => JSON.stringify([b.symbol, b.session]);
+export const sessionKey = b => JSON.stringify([b.symbol, b.session]);
 const pointKey = p => JSON.stringify([p.symbol, p.session, p.bar]);
-const side = p => p.always_in === 'long' ? 1 : p.always_in === 'short' ? -1 : 0;
-const finalBar = b => b.final === 1 || b.final === true || b.bar === 78;
-function group(rows, key) {
+export const side = p => p.always_in === 'long' ? 1 : p.always_in === 'short' ? -1 : 0;
+export const finalBar = b => b.final === 1 || b.final === true || b.bar === 78;
+export function group(rows, key) {
  const groups = new Map();
  for (const row of rows) {
   const k = key(row);
@@ -43,9 +43,9 @@ function sessionReturn(bb, predictions, cost) {
   position: finalBar(last) || !position ? 'flat' : position > 0 ? 'long' : 'short'};
 }
 
-function score(sessions, predictions, cost) {
+export function score(sessions, predictions, cost, simulate = sessionReturn) {
  const rows = [], hits = [], brier = [], losses = [], pairs = [];
- const target_stop = {};
+ const target_stop = {}, extra = {};
  let pending_6 = 0, pending_horizon = 0, unavailable_6 = 0, unavailable_horizon = 0;
  let missing_bars = 0, pending_entries = 0;
  for (const [key, pp] of group(predictions, sessionKey)) {
@@ -55,8 +55,10 @@ function score(sessions, predictions, cost) {
    continue;
   }
   pp.sort((a, b) => a.bar - b.bar);
-  const row = sessionReturn(bb, pp, cost);
+  const row = simulate(bb, pp, cost);
   rows.push(row);
+  // Extra per-session counters (v2 only).
+  for (const [k, n] of Object.entries(row.counts || {})) extra[k] = (extra[k] || 0) + n;
   pending_entries += row.pending;
   const byNumber = new Map(bb.map(b => [b.bar, b]));
   const last = bb.at(-1);
@@ -112,7 +114,8 @@ function score(sessions, predictions, cost) {
   target_before_stop_rate: valid ? (target_stop.target || 0) / valid : null,
   account: {days: equity_curve.length, total_return: equity - 1, max_drawdown,
    annualized_sharpe: variance ? avg / Math.sqrt(variance) * Math.sqrt(252) : null,
-   exposure: mean(equity_curve.map(r => r.exposure)), equity_curve}
+   exposure: mean(equity_curve.map(r => r.exposure)), equity_curve},
+  ...extra
  };
 }
 
@@ -148,21 +151,21 @@ export function sessionPositions(bars, predictions, conditions, cost_bps) {
  }));
 }
 
-export function computeIntradayMetrics(bars, predictions, {cost_bps = 1} = {}) {
+export function computeIntradayMetrics(bars, predictions, {cost_bps = 1, simulate = sessionReturn} = {}) {
  const sessions = group(bars, sessionKey);
  for (const bb of sessions.values()) bb.sort((a, b) => a.bar - b.bar);
  const valid = predictions.filter(p => decisionBar(p.bar));
  const groups = group(valid.filter(p => p.condition !== 'missed'), p => p.condition);
  const conditions = Object.create(null), paired = Object.create(null);
  for (const [condition, pp] of groups) {
-  conditions[condition] = score(sessions, pp, cost_bps / 10000);
+  conditions[condition] = score(sessions, pp, cost_bps / 10000, simulate);
   paired[condition] = {};
   for (const m of condition === 'skill_chart' ? [...mechanical, 'skill'] : mechanical) {
    if (m === condition) continue;
    const baseline = new Map((groups.get(m) || []).map(p => [pointKey(p), p]));
    const matched = pp.filter(p => baseline.has(pointKey(p)));
-   const a = score(sessions, matched, cost_bps / 10000);
-   const b = score(sessions, matched.map(p => baseline.get(pointKey(p))), cost_bps / 10000);
+   const a = score(sessions, matched, cost_bps / 10000, simulate);
+   const b = score(sessions, matched.map(p => baseline.get(pointKey(p))), cost_bps / 10000, simulate);
    const delta = {};
    for (const k of ['direction_hit_rate', 'direction_coverage', 'brier', 'log_loss', 'target_before_stop_rate']) {
     delta[k] = a[k] == null || b[k] == null ? null : a[k] - b[k];

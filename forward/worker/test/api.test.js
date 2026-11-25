@@ -58,14 +58,14 @@ test('public intraday sessions default to stored bars and accept skill_chart wri
   p_up_6: .6, target: null, stop: null, horizon: 6, day_type: 'trend', close: 100, reading: 'test'};
  assert.equal((await call(env, '/api/intraday/predictions', 'POST', decision)).status, 200);
  const get = suffix => call(env, '/api/intraday/session' + suffix, 'GET', undefined, '');
- const data = await (await get('')).json();
+ const data = await (await get('?v=1')).json();
  assert.deepEqual(data.sessions, [latest, earlier]);
  assert.equal(data.session, latest);
  assert.equal(data.bars.length, 4);
  assert.deepEqual(data.predictions, [decision]);
  assert.equal(data.positions.skill_chart.position, 'long');
  assert.ok(Math.abs(data.positions.skill_chart.return - .0299) < 1e-9);
- const past = await (await get('?session=' + earlier)).json();
+ const past = await (await get('?v=1&session=' + earlier)).json();
  assert.equal(past.session, earlier);
  assert.equal(past.bars.length, 1);
  assert.deepEqual(past.predictions, []);
