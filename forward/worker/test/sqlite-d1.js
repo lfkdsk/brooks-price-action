@@ -58,4 +58,5 @@ export class SqliteD1 {
  }
 }
 
-export const MIGRATIONS = ['../schema.sql', '../migrations/0002_intraday.sql', '../migrations/0003_archive.sql', '../migrations/0004_levels_ok.sql'];
+export const MIGRATIONS = ['../schema.sql', '../migrations/0002_intraday.sql', '../migrations/0003_archive.sql', '../migrations/0004_levels_ok.sql',
+ '../migrations/0005_protocol_v2.sql'];

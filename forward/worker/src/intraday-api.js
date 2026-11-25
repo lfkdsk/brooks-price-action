@@ -1,4 +1,7 @@
 import {computeIntradayMetrics, decisionBar, mechanical, sessionPositions} from './intraday-metrics.js';
+import {computeIntradayMetricsV2, indexMinutes, sessionPositionsV2} from './intraday-metrics-v2.js';
+import {loadMinutes} from './minutes.js';
+import {protocolFor, tagProtocol} from './protocol.js';
 import {intradayPage, recapPage} from './intraday-pages.js';
 
 export const intradayWrites = ['/api/intraday/bars', '/api/intraday/predictions', '/api/recaps'];
@@ -112,14 +115,27 @@ export function intradayRoutes({json, date, number, symbol, text, all, levelsFie
     [...filters.map(([, v]) => v), limit]);
    return json({predictions});
   }
+  const protocol = protocolFor('intraday', params);
+  if (!protocol && ['/api/intraday/stats', '/api/intraday/session'].includes(path)) return invalid('version');
+  if (path === '/api/intraday/stats' && protocol.version === 2) {
+   const from = protocol.from || '';
+   const args = sym ? [from, sym] : [from];
+   const where = ' WHERE session>=?' + (sym ? ' AND symbol=?' : '');
+   const [bars, preds, minutes] = await Promise.all([
+    all(db, 'SELECT symbol,ts,session,bar,open,high,low,close,final FROM ibars' + where, args),
+    all(db, 'SELECT symbol,session,bar,condition,always_in,p_up_6,target,stop,horizon,created_at FROM ipredictions' + where, args),
+    loadMinutes(all, db, {from, symbol: sym})
+   ]);
+   return tagProtocol(json({...computeIntradayMetricsV2(bars, preds, {cost_bps: costBps(env), minutes: indexMinutes(minutes)}), protocol}), protocol);
+  }
   if (path === '/api/intraday/stats') {
    const args = sym ? [sym] : [];
    const where = sym ? ' WHERE symbol=?' : '';
    const [bars, preds] = await Promise.all([
     all(db, 'SELECT symbol,session,bar,open,high,low,close,final FROM ibars' + where, args),
-    all(db, 'SELECT symbol,session,bar,condition,always_in,p_up_6,target,stop,horizon FROM ipredictions' + where, args)
+    all(db, 'SELECT symbol,session,bar,condition,always_in,p_up_6,target,stop,horizon,created_at FROM ipredictions' + where, args)
    ]);
-   return json(computeIntradayMetrics(bars, preds, {cost_bps: costBps(env)}));
+   return tagProtocol(json(computeIntradayMetrics(bars, preds, {cost_bps: costBps(env)})), protocol);
   }
   const selected = sym || 'SPY';
   if (path === '/api/intraday/session') {
@@ -128,14 +144,21 @@ export function intradayRoutes({json, date, number, symbol, text, all, levelsFie
    const day = session || sessions[0] || null;
    const index = sessions.indexOf(day);
    if (session && index < 0) return json({error: 'Session bars unavailable'}, 404);
-   if (!day) return json({session: null, sessions, latest_final: false, bars: [], predictions: [],
-    positions: sessionPositions([], [], activeConditions, costBps(env))});
-   const [bars, predictions] = await Promise.all([
+   const modern = protocol.version === 2;
+   // Positions always follow the selected rules for the shown day; `counted` says whether that day is in the statistics.
+   const extra = modern ? {protocol: {...protocol, counted: !!day && (!protocol.from || day >= protocol.from)}} : {};
+   if (!day) return tagProtocol(json({session: null, sessions, latest_final: false, bars: [], predictions: [],
+    positions: modern ? sessionPositionsV2([], [], activeConditions, costBps(env)).positions : sessionPositions([], [], activeConditions, costBps(env)),
+    ...(modern ? {fills: {}} : {}), ...extra}), protocol);
+   const [bars, predictions, minutes] = await Promise.all([
     contextBars(db, selected, day),
-    all(db, 'SELECT * FROM ipredictions WHERE symbol=? AND session=? ORDER BY bar,condition', [selected, day])
+    all(db, 'SELECT * FROM ipredictions WHERE symbol=? AND session=? ORDER BY bar,condition', [selected, day]),
+    modern ? loadMinutes(all, db, {from: day, to: day, symbol: selected}) : []
    ]);
-   return json({session: day, sessions, latest_final: Boolean(days[0]?.final), bars, predictions,
-    positions: sessionPositions(bars.filter(b => b.session === day), predictions, activeConditions, costBps(env))});
+   const today = bars.filter(b => b.session === day);
+   const result = modern ? sessionPositionsV2(today, predictions, activeConditions, costBps(env), indexMinutes(minutes)) :
+    {positions: sessionPositions(today, predictions, activeConditions, costBps(env))};
+   return tagProtocol(json({session: day, sessions, latest_final: Boolean(days[0]?.final), bars, predictions, ...result, ...extra}), protocol);
   }
   if (path === '/api/recaps') {
    const rows = await all(db, 'SELECT * FROM recaps WHERE symbol=?' +

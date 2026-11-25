@@ -2,20 +2,23 @@ import {escapeHtml} from './ui-common.js';
 
 export {escapeHtml};
 
-export function buildOverlay(bars, predictions, session, condition) {
+// fills (protocol v2, optional): [{bar, status, fill_bar}] for the condition; without it decisions start at the next bar (v1).
+export function buildOverlay(bars, predictions, session, condition, fills) {
  const today = bars.filter(b => b.session === session);
  const available = new Set(today.map(b => b.bar));
  const last = today.at(-1);
  const matching = predictions.filter(p => p.session === session && p.condition === condition)
   .sort((a, b) => a.bar - b.bar);
  const decisions = matching.filter(p => available.has(p.bar));
- const entries = matching.filter(p => available.has(p.bar + 1));
+ const fillBars = fills && new Map(fills.filter(f => f.status === 'filled').map(f => [f.bar, f.fill_bar]));
+ const startOf = p => fillBars ? fillBars.get(p.bar) : p.bar + 1;
+ const entries = matching.filter(p => available.has(startOf(p)));
  const segments = [], markers = [];
  let position = 'flat';
  for (const [i, p] of entries.entries()) {
-  const start = p.bar + 1;
+  const start = startOf(p);
   const side = ['long', 'short'].includes(p.always_in) ? p.always_in : 'flat';
-  segments.push({start, end: (entries[i + 1]?.bar ?? last.bar) + 1, side});
+  segments.push({start, end: entries[i + 1] ? startOf(entries[i + 1]) : last.bar + 1, side});
   if (side !== position) {
    if (position !== 'flat') markers.push({bar: start, side: position, type: 'exit', price: 'open'});
    if (side !== 'flat') markers.push({bar: start, side, type: 'entry', price: 'open'});

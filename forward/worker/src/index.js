@@ -1,5 +1,7 @@
 import {intradayRoutes,intradayWrites} from './intraday-api.js';
 import {computeMetrics,levelsOk} from './metrics.js';
+import {computeMetricsV2} from './metrics-v2.js';
+import {protocolFor,tagProtocol} from './protocol.js';
 import {archiveRoutes,archiveWrites,runSnapshots} from './archive-api.js';
 import {dashboard,readingPage} from './dashboard.js';
 const json=(data,status=200)=>new Response(JSON.stringify(data),{status,headers:{'content-type':'application/json; charset=utf-8','cache-control':'no-store'}});
@@ -65,9 +67,18 @@ export default {async fetch(request,env){
   return json({predictions:await all(db,`SELECT * FROM predictions${clauses.length?' WHERE '+clauses.join(' AND '):''} ORDER BY asof DESC,id DESC LIMIT ?`,[...args,limit])});
  }
  if(path==='/api/stats'||path==='/api/equity'){
-  const [bars,preds]=await Promise.all([all(db,'SELECT * FROM bars ORDER BY symbol,date'),all(db,'SELECT * FROM predictions ORDER BY symbol,asof')]);const stats=computeMetrics(bars,preds);
+  const protocol=protocolFor('daily',u.searchParams);if(!protocol)return json({error:'Invalid version'},400);
+  let bars,preds,stats;
+  if(protocol.version===1){
+   [bars,preds]=await Promise.all([all(db,'SELECT * FROM bars ORDER BY symbol,date'),all(db,'SELECT * FROM predictions ORDER BY symbol,asof')]);stats=computeMetrics(bars,preds);
+  }else{
+   const from=protocol.from||'';
+   [bars,preds]=await Promise.all([all(db,'SELECT symbol,date,open,high,low,close FROM bars WHERE date>=? ORDER BY symbol,date',[from]),all(db,'SELECT symbol,asof,condition,always_in,p_up_5,target,stop,horizon,close,created_at FROM predictions WHERE asof>=? ORDER BY symbol,asof',[from])]);
+   stats=computeMetricsV2(bars,preds);
+  }
   const first=preds.map(p=>p.created_at||p.asof).sort()[0];stats.days_running=first?Math.max(0,Math.floor((Date.now()-Date.parse(first.endsWith('Z')?first:first.replace(' ','T')+'Z'))/86400000)):0;
-  return json(path==='/api/stats'?stats:Object.fromEntries(Object.entries(stats.conditions).map(([c,m])=>[c,m.account.equity_curve])));
+  const extra=protocol.version===1?{}:{protocol};
+  return tagProtocol(json(path==='/api/stats'?{...stats,...extra}:{...Object.fromEntries(Object.entries(stats.conditions).map(([c,m])=>[c,m.account.equity_curve])),...extra}),protocol);
  }
  if(/^\/reading\/\d+$/.test(path)){const p=await db.prepare('SELECT * FROM predictions WHERE id=?').bind(Number(path.split('/')[2])).first();return p?new Response(readingPage(p),{headers:{'content-type':'text/html; charset=utf-8'}}):json({error:'Not found'},404);}
  return json({error:'Not found'},404);

@@ -79,6 +79,9 @@ upload is printed locally; completed predictions remain stored.
 
 ## Metric definitions
 
+This section and the five-minute section describe protocol **v1** (`?v=1`). The default is
+[protocol v2](#scoring-protocol-v2); both score the same stored rows.
+
 Metrics are recomputed from stored bars and predictions, by condition and symbol:
 
 - **Account:** signal at close t is +1 long, −1 short, or 0 unclear, held only to the
@@ -300,3 +303,38 @@ returns stop at the first close after the `to` date; forecast outcomes use all l
 `conditions` is a comma-separated list; omit it for all groups. Writes use the existing
 Bearer token. Node tests that hit SQL run the Worker's statements against real SQLite through
 `python3` (`worker/test/sqlite-d1.js`) and are skipped when python3 is missing.
+
+## Scoring protocol v2
+
+v1 fills at prices that were gone: daily fills at the 13:00 PT close although decisions start
+13:40 PT; intraday fills at the next 5-minute open although rows are stored about 40 s (max 125 s)
+later. v2 rescores the same rows; nothing stored changes and v1 stays available with `v=1`.
+
+- **Daily:** decision as of close t is held from open t+1 to open t+2, recorded only once open t+2
+  exists (dated t+2). Missing = flat. Same turnover cost; at the data edge a flat next decision
+  liquidates at the last open. A row whose `created_at` is at or after 09:30 New York of day t+1 is
+  not executed (`late`). Hit rate, Brier, log loss and calibration mature after exactly 5 later bars;
+  barriers keep the declared horizon.
+- **Intraday:** fill = open of the first `ibars1m` bar starting at or after `created_at` (and after
+  the decision bar has closed). If a whole 5-minute bar passes before the next 1-minute bar, the open
+  of the first 5-minute bar starting at or after that time. Fills must start before the session's
+  final bar, else `unfilled`; before the session ends such rows are `pending`. A decision whose fill
+  is not earlier than a newer decision's fill is `superseded`. Missed, unfilled and superseded points
+  keep the position. Flat at the final bar's close (bar 42 on a 13:00 ET half-day). Open sessions are
+  marked at the newest stored 1- or 5-minute close.
+- **`<condition>_ts`** (daily skill, baseline; intraday skill, skill_chart, baseline): derived, not
+  stored. Same fills, but exits when the decision's target/stop trades (daily bar / 1-minute bars; an
+  incomplete 5-minute slot uses the 5-minute bar). Both in one bar = stop, gap = that bar's open.
+  Flat until the next decision. Null or wrong-side-of-fill levels are ignored (`levels_ignored`,
+  split into `levels_missing` and `levels_wrong_side`). `target_exits` / `stop_exits` count exits.
+- **Start:** daily asof >= 2026-11-25, intraday session >= 2026-11-27; `&all=1` applies v2 to
+  everything. `/api/intraday/session` always shows positions for the selected day and says
+  `protocol.counted`.
+- `v` (1 or 2, default 2) on `/api/stats`, `/api/equity`, `/api/intraday/stats`,
+  `/api/intraday/session`, `/api/explore`, `/api/export.csv`. v2 JSON has `protocol`; v1 bodies are
+  byte-identical to before, and every response has an `x-scoring-protocol` header.
+- Snapshots go to `metrics_snapshots_v2` (`migrations/0005_protocol_v2.sql`, idempotent; the job
+  works without it). `GET /api/snapshots?v=2` reads them; its default is still v1.
+- Limits: daily upserts keep the first `created_at`, so a revised reading looks as old as the original.
+  `created_at` has one-second resolution (truncated). v2 intraday statistics read up to 375 1-minute rows
+  per symbol-session with decisions.
