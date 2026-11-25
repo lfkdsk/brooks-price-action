@@ -53,7 +53,7 @@ export default {async fetch(request,env){
    const p=body;if(!symbol(p.symbol)||!date(p.asof)||!text(p.condition,60)||!p.condition||!['long','short','unclear'].includes(p.always_in)||!number(p.p_up_5)||p.p_up_5<0||p.p_up_5>1||!Number.isInteger(p.horizon)||p.horizon<1||p.horizon>20||!number(p.close)||p.close<=0||!['target','stop'].every(k=>p[k]===null||number(p[k]))||!text(p.reading,200000)||!text(p.model)||!text(p.skill_sha)||!text(p.state))return json({error:'Invalid prediction'},400);
    if(!levelsField(p.levels_ok))return json({error:'Invalid prediction'},400);
    const cols=['symbol','asof','condition','model','skill_sha','always_in','p_up_5','target','stop','horizon','state','close','reading'];
-   await withLevels(cols,{...p,levels_ok:levelsValue(p,p.close)},c=>db.prepare(`INSERT INTO predictions(${c.join(',')}) VALUES(${c.map(()=>'?').join(',')}) ON CONFLICT(symbol,asof,condition) DO UPDATE SET ${c.slice(3).map(k=>`${k}=excluded.${k}`).join(',')}`));return json({ok:true});
+   await withLevels(cols,{...p,levels_ok:levelsValue(p,p.close)},c=>db.prepare(`INSERT INTO predictions(${c.join(',')}) VALUES(${c.map(()=>'?').join(',')}) ON CONFLICT(symbol,asof,condition) DO NOTHING`));return json({ok:true});
   }
   const r=body;if(!text(r.started_at)||!text(r.finished_at)||!text(r.host)||typeof r.ok!=='boolean'||!text(r.log,200000))return json({error:'Invalid run'},400);
   await db.prepare('INSERT INTO runs(started_at,finished_at,host,ok,log) VALUES(?,?,?,?,?)').bind(r.started_at,r.finished_at,r.host,+r.ok,r.log).run();return json({ok:true});

@@ -209,6 +209,8 @@ test('CSV cells escape quotes, separators, newlines and spreadsheet formulas', (
 test('GET /api/export.csv: one row per filtered prediction with outcome fields, attachment header', sql, async () => {
  const {env} = await seededDaily();
  await call(env, '/api/predictions', 'POST', prediction('SPY', dates[3], 'skill', {model: 'evil,"model"\n=1', close: 103, target: 90, stop: 110}));
+ // Daily predictions are insert-only: give the stored row the hostile model directly to test CSV escaping.
+ env.DB.exec(`UPDATE predictions SET model='evil,"model"'||char(10)||'=1', always_in='long', close=103, target=90, stop=110, levels_ok=0 WHERE symbol='SPY' AND asof='${dates[3]}' AND condition='skill'`);
  const r = await call(env, `/api/export.csv?v=1&scope=daily&from=${dates[3]}&to=${dates[4]}&symbol=SPY&conditions=skill`);
  assert.equal(r.status, 200);
  assert.match(r.headers.get('content-type'), /^text\/csv/);

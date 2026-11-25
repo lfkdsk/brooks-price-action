@@ -458,7 +458,7 @@ test('newest session shows v2 positions although its statistics are empty', sql,
  assert.equal(s.predictions.length, 2);
 });
 
-test('re-posting a prediction never changes created_at (daily upsert revises the reading, intraday is insert-only)', sql, async () => {
+test('re-posting a prediction changes nothing: daily and intraday are both insert-only', sql, async () => {
  const env = makeEnv();
  const d = {symbol: 'SPY', asof: '2026-11-25', condition: 'skill', model: 'm', skill_sha: 's', always_in: 'long', p_up_5: .6, target: null, stop: null, horizon: 5, state: 'x', close: 100, reading: 'r'};
  const i = {symbol: 'SPY', session: S, bar: 3, ts: S + 'T14:40:00Z', condition: 'skill', model: 'm', skill_sha: 's', always_in: 'long', p_up_6: .6, target: null, stop: null, horizon: 6, day_type: 'x', close: 100, reading: 'r'};
@@ -468,7 +468,7 @@ test('re-posting a prediction never changes created_at (daily upsert revises the
  await request(env, '/api/predictions', 'POST', {...d, always_in: 'short', created_at: '2000-01-01 00:00:00'});
  await request(env, '/api/intraday/predictions', 'POST', {...i, always_in: 'short', created_at: '2000-01-01 00:00:00'});
  const a = (await env.DB.prepare('SELECT * FROM predictions').bind().all()).results, b = (await env.DB.prepare('SELECT * FROM ipredictions').bind().all()).results;
- assert.deepEqual(a.map(p => [p.created_at, p.always_in]), [['2026-11-25 21:41:00', 'short']]);
+ assert.deepEqual(a.map(p => [p.created_at, p.always_in]), [['2026-11-25 21:41:00', 'long']]);
  assert.deepEqual(b.map(p => [p.created_at, p.always_in]), [['2026-11-27 14:45:44', 'long']]);
 });
 
@@ -484,7 +484,7 @@ test('migration 0005 is idempotent and keeps existing rows', sql, () => {
 const script = html => html.match(/<script>([\s\S]*?)<\/script>/)[1];
 test('pages: switch, explanation, empty state, v1 warning, target/stop toggle, help and baseline note', () => {
  for (const [name, html] of Object.entries({daily: dashboardPage(), intraday: intradayPage(), explore: explorePage()})) {
-  for (const text of ['id="proto"', '新规则 v2', '旧规则 v1', '旧规则：成交价偏乐观，仅供参考', '2026-11-25（日线）/ 2026-11-27（日内）', '开始统计，暂无数据', '（执行目标/止损）', '显示执行目标/止损版'])
+  for (const text of ['id="proto"', '新规则 v2', '旧规则 v1', '旧规则：成交价不可执行，仅供参考', '2026-11-25（日线）/ 2026-11-27（日内）', '开始统计，暂无数据', '（执行目标/止损）', '显示执行目标/止损版'])
    assert.ok(html.includes(text), name + ': ' + text);
   new Script(script(html));
  }
@@ -502,7 +502,7 @@ test('page helpers: version from the URL, links keep other parameters, _ts rows 
  const c = run('?symbol=QQQ&v=1');
  assert.equal(c.protocolHref(2), '/intraday?symbol=QQQ');
  assert.equal(run('?symbol=QQQ').protocolHref(1), '/intraday?symbol=QQQ&v=1');
- assert.match(c.protocolBar(1), /旧规则：成交价偏乐观/);
+ assert.match(c.protocolBar(1), /旧规则：成交价不可执行/);
  assert.doesNotMatch(c.protocolBar(2), /class="chip warn"/);
  assert.match(c.protocolEmpty('2026-11-25'), /新规则从 2026-11-25 开始统计，暂无数据。<a href="[^"]*v=1">/);
  const g = {key: 'skill', name: 'A', short: 'a'}, ts = c.tsGroup(g), e = {key: 'ema20', name: 'E', short: 'e'};

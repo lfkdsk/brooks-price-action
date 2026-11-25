@@ -86,7 +86,7 @@ function protocolHref(version) {
 function protocolBar(version) {
  const link = (n, text) => '<a href="' + escapeHtml(protocolHref(n)) + '"' + (n === version ? ' aria-current="true"' : '') + '>' + text + '</a>';
  return '<div class="proto-row"><div class="proto-sw" role="group" aria-label="统计规则">' + link(2, '新规则 v2') + link(1, '旧规则 v1') + '</div>' +
-  (version === 1 ? '<span class="chip warn">旧规则：成交价偏乐观，仅供参考</span>' : '') + '</div>' +
+  (version === 1 ? '<span class="chip warn">旧规则：成交价不可执行，仅供参考</span>' : '') + '</div>' +
   '<p class="proto-note">新规则按判断写入后真正还能成交的价格算：日线为次日开盘，日内为之后第一根1分钟K线开盘；旧规则按当日收盘 / 下一根5分钟K线开盘。v2 从 2026-11-25（日线）/ 2026-11-27（日内）开始统计。</p>';
 }
 function protocolEmpty(from) {
